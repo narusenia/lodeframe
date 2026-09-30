@@ -63,11 +63,11 @@ lodeframe/
 ## プロトコルデータ（D3〜D5）
 
 - 対象は最新リリース 1 本。版番号は着手時点の最新 stable で確定し、`lodeframe-protocol` の定数に置く。
-- `cargo xtask datagen <version>`: server.jar を取得 → data generator（`--reports` 等）を実行 → JSON からブロック状態・レジストリ・パケット ID の Rust コードを生成。server.jar と JSON 自体は commit しない。
+- `mise run datagen [version]`（= `cargo xtask datagen`）: server.jar を取得 → data generator（`--reports` 等）を実行 → JSON からブロック状態・レジストリ・パケット ID の Rust コードを生成。server.jar と JSON 自体は commit しない。
 - configuration フェーズは Known Packs で vanilla データの送信を省き、利用者が追加したレジストリだけ本体を送る。
 
 ## 版追従の手順
 
-1. `cargo xtask datagen <新版>` で生成物を差し替え
+1. `mise run datagen <新版>` で生成物を差し替え
 2. 差分のあるパケットを手書き分で修正（protocol の変更点は wiki.vg 後継資料と生成物の diff で確認）
 3. ボット統合テストを通す

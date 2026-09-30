@@ -30,4 +30,4 @@
 | D23 | 座標・ベクトルは **`Vec3 = glam::DVec3`**（再エクスポート）と自前の **`Pos`**（`DVec3` + yaw / pitch）・**`BlockPos`**（i32 の newtype）。いまの wire 型 `Position` は `BlockPos` に改名する。型は protocol に置く | Minestom の `Vec` / `Pos` / `BlockVec` 相当。ベクトル演算（dot / length / normalize）を自作すると glam とほぼ同じものを書くことになる。glam は Rust のゲーム開発での事実上の標準で、利用者が自分のコードと直接つなげられる。`Pos` と `BlockPos` はワイヤー形式・範囲・チャンク座標変換の意味を持つので自前 | Accepted |
 | D24 | ブロック状態は**表 + 計算**で持つ。ブロックごとに名前・先頭状態 ID・既定状態・プロパティ定義だけを生成し、状態 ID ⇔ プロパティ値は混合基数（プロパティ名のアルファベット順、先頭が最上位）で計算する。生成時に全状態で検証し、崩れたら失敗させる | 35,723 状態を全展開すると生成物が数 MB になる。26.3 で全ブロックがこの規則に従うことを確認済み（JSON 上のプロパティ順とは 12 ブロックで違う） | Accepted |
 | D25 | `#[packet(id = ..)]` は整数リテラルに限らず**定数式**を受け付け、生成された `ids::<state>::<side>::<NAME>` を参照する | 版を上げて再生成しても手書きパケットが無修正で追従し、消えたパケットはコンパイルエラーで分かる | Accepted |
-| D26 | datagen に要る Java は **`mise.toml` の `java` で揃える**。通常のビルド・CI（check / msrv）は Java を要求しない | datagen は開発者だけが使うタスクで、生成物は commit される（D5） | Accepted |
+| D26 | datagen に要る Java は **`mise.toml` の `datagen` タスクの `tools` で揃える**（`mise run datagen [version]`）。`[tools]` には置かず、通常のビルド・CI（check / msrv）は Java を入れない | datagen は開発者だけが使うタスクで、生成物は commit される（D5） | Accepted |

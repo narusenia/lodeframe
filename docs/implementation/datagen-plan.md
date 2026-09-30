@@ -1,6 +1,6 @@
 # datagen 実装計画（M1-05）
 
-> **Status**: In progress — 2026-09-30
+> **Status**: 実装済み — 2026-09-30（26.3 で生成。`blocks.rs` は約 276KB、生成物の合計は約 300KB）
 
 要件: REQ-PROTO-002。決定: D4・D5（[decisions.md](../decisions.md)）、Q23〜Q25（D24〜D26）。
 複数 crate（xtask・protocol・macros）にまたがるためここに設計を置く。
@@ -14,7 +14,7 @@
 
 | 事実 | 影響 |
 |---|---|
-| `java -DbundlerMainClass=net.minecraft.data.Main -jar server.jar --reports --output <dir>` が 3 秒で終わる。Java 25 が要る | xtask が実行する。Java は mise で揃える（D26） |
+| `java -DbundlerMainClass=net.minecraft.data.Main -jar server.jar --reports --output <dir>` が 3 秒で終わる。Java 25 が要る | xtask が実行する。Java は `mise run datagen` のタスク単位で揃える（D26） |
 | `blocks.json`（1,286 ブロック・35,723 状態）、`packets.json`、`registries.json`（95 種）が出る | この 3 つを使う |
 | block レジストリの `protocol_id` は 0..N-1 で欠けが無く、各ブロックの先頭状態 ID は protocol 順に単調増加 | `Block` の添字 = レジストリ ID、状態 → ブロックは二分探索で引ける |
 | 状態 ID は「ブロックごとに連続、プロパティを**名前のアルファベット順**に並べ、先頭を最上位の桁とする混合基数」。JSON 上のプロパティ順とは **12 ブロック（チェスト・ピストン類）で違う** | 生成時にプロパティを名前順に並べ、全 35,723 状態で検証する（D24） |
@@ -40,7 +40,7 @@
 
 ## xtask
 
-`cargo xtask datagen [<version>]`（省略時は最新リリース）
+`mise run datagen [<version>]`（= `cargo xtask datagen`。省略時は最新リリース）
 
 1. バージョン一覧 → 版のメタ → `server.jar` を取得し sha1 を検証。`target/xtask/datagen/<version>/` にキャッシュ（curl を呼ぶ。TLS の依存を持たない）
 2. data generator を実行
