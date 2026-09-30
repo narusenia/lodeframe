@@ -7,20 +7,15 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
 
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      - uses: jdx/mise-action@v2
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets
-      - run: cargo test --workspace
+      - run: mise run check
 
   msrv:
     runs-on: ubuntu-latest
@@ -34,3 +29,5 @@ jobs:
           toolchain: ${{ steps.msrv.outputs.version }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --workspace
+        env:
+          RUSTFLAGS: -D warnings
