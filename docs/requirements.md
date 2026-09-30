@@ -232,7 +232,8 @@ Adventure 相当の層（D19）。Component と MiniMessage は `lodeframe-text`
 
 ### REQ-MACRO-001: `derive(Encode, Decode)`
 
-- `#[derive(Packet)] #[packet(id = .., state = Play)]` を含む。利用者の独自パケット・プラグインメッセージにも使える。
+- `#[derive(Packet)] #[packet(id = .., state = Play, side = Clientbound)]` を含む。パケット ID は状態と向きごとにしか一意でないため `side` が要る。利用者の独自パケット・プラグインメッセージにも使える。
+- derive は既定で `::lodeframe::protocol` を指す。protocol 内部や protocol を直接使う crate は `#[lodeframe(crate = crate)]` で指定する（D22）。
 - **受入条件**
   - [ ] v0.1 の全パケットがマクロで定義されている
   - [ ] 属性の誤りはフィールドを指すコンパイルエラーになる
