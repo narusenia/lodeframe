@@ -5,6 +5,8 @@
 
 [tools]
 rust = { version = "1.95", components = "rustfmt,clippy", profile = "minimal" }
+# only `cargo xtask datagen` needs it (vanilla data generator)
+java = "25"
 
 [tasks.fmt]
 description = "Check formatting"
