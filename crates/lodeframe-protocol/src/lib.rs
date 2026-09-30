@@ -7,9 +7,11 @@ mod component;
 mod coord;
 pub mod entity_type;
 mod error;
+mod frame;
 mod generated;
 mod nbt;
 mod packet;
+pub mod packets;
 mod string;
 mod types;
 mod varint;
@@ -19,6 +21,9 @@ pub use codec::{Decode, Encode, take};
 pub use coord::{BlockPos, Pos, Vec3};
 pub use entity_type::EntityType;
 pub use error::{Error, Result};
+pub use frame::{
+    FrameDecoder, MAX_BODY_LEN, MAX_FRAME_LEN, encode_frame, packet_body, split_packet_id,
+};
 pub use generated::packet_ids as ids;
 pub use generated::version::{PROTOCOL_VERSION, VERSION_NAME, WORLD_VERSION};
 pub use glam;
