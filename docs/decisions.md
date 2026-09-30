@@ -1,0 +1,25 @@
+# 決定事項
+
+設計セッション（2026-09-30）で決めたこと。覆すときは行を消さず、
+ステータスを `Superseded` にして新しい行を足す。
+
+| # | 決定 | 根拠 | ステータス |
+|---|---|---|---|
+| D1 | **ライブラリ型**（Minestom 型）。単体サーバーは作らず、`examples/` に動くロビーを 1 つ置く | vanilla 互換（mob AI、レッドストーン、ワールド生成）は実装量が桁違いで minimal と矛盾し、Pumpkin / FerrumC と正面衝突する。Rust のライブラリ型は Valence が ECS で重く停滞気味で、素直なイベント API の隙間がある | Accepted |
+| D2 | 言語は **Rust** | tokio / flate2 / aes / rsa / serde が揃う。ライブラリ型なので利用者層が要る。MoonBit は AES-CFB8・RSA・zlib・HTTPS が未成熟で C FFI 自前になり、利用者もほぼいない | Accepted |
+| D3 | 対応プロトコルは**最新リリース 1 本のみ**。古いクライアントは ViaProxy 等を前段に置いて吸収 | 実装量最小。特定版固定は Valence（1.20.1 で停止）と同じ失速パターン | Accepted |
+| D4 | パケットは**必要な分だけ手書き**、ブロック状態・レジストリ・パケット ID は **vanilla の data generator 出力から codegen** | 数万のブロック状態を手で持つのは非現実的。既存 crate（azalea-protocol 等）依存はクライアント寄りの型と追従タイミングをコアごと他人に握られる | Accepted |
+| D5 | codegen は **xtask で実行し、生成済み Rust コードを commit** する。`build.rs` で server.jar を取得しない | crates.io からのビルドをオフラインで完結させる。Minestom / Pumpkin も生成データを repo に持つ | Accepted |
+| D6 | **Instance 単位の単一スレッド所有**。I/O は tokio、Instance 間は message passing のみ、グローバル可変シングルトン禁止 | ロック不要でハンドラに `&mut` を渡せる。複数 Instance で自然にスケールし、将来の Instance 内並列化（region 分割）の余地も残る | Accepted |
+| D7 | v0.1 = **接続〜スポーン + マルチプレイ基礎** | イベント API の形を検証できる最小セット | Accepted |
+| D8 | 認証は **Velocity modern forwarding 先行（v0.2）→ 単体 online mode（v0.3）** | forwarding は HMAC 検証だけで軽い。Minestom 利用者の実態も proxy 配下運用が主流 | Accepted |
+| D9 | イベントは**型付きハンドラ登録 + 階層ノード**（Minestom の EventNode 相当） | 複数ミニゲームの同居・付け外しに階層が要る | Accepted |
+| D10 | ワールドは **`ChunkLoader` trait + Anvil 読込のみ**。保存は利用者実装 | ミニゲームは毎回初期化が基本。バニラで建築したロビー配布はカバーする | Accepted |
+| D11 | proc-macro は **4 系統**: `derive(Encode, Decode)`（v0.1）、`#[command]`・`#[event]` / `derive(Event)`（v0.2）、宣言的 UI（`text!` / `item!` / GUI、v0.3） | 開発体験の向上。コンパイル時間とエラーの分かりにくさはコストとして受け入れ、段階導入する | Accepted |
+| D12 | 性能は**実測で比較可能な目標**を置き、Minestom と同条件で比べるベンチを持つ | 「lightweight」を主張する根拠 | Accepted |
+| D13 | 標準機能は **Minestom 相当**。AI・pathfinding・戦闘は持たず、必要なら後で util crate として配る | minimal の境界線 | Accepted |
+| D14 | crate は**最小分割 + facade**（protocol / macros / 本体）。境界が固まったら分割を再検討 | 初期は境界が動くので細分割は摩擦になる。protocol はボット・proxy 用途で単独利用できるよう分ける | Accepted |
+| D15 | テストは **単体 + 自前ボット**。ボットは lodeframe-protocol で書き、統合テストと負荷試験に兼用 | azalea はボット 1 体が重く負荷試験側がボトルネックになり、版追従がずれるとテストが止まる | Accepted |
+| D16 | ハンドラは**同期 fn 固定**。非同期処理は `ctx.spawn(async {..}).then(|res, ctx| ..)` で tokio に投げ、結果は同じ Instance スレッドで受ける。ログイン前検証用の async イベントだけ別枠 | async ハンドラは await 中に `&mut World` を保持できず所有モデルと衝突し、tick 遅延の温床になる | Accepted |
+| D17 | OSS、**MIT OR Apache-2.0**、crates.io 公開 | Rust エコシステム標準 | Accepted |
+| D18 | **stable 最新追従、edition 2024**。MSRV は明記するが積極的に上げる | 初期利用者は最新 stable 前提で問題ない | Accepted |
