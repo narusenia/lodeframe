@@ -25,3 +25,4 @@
 | D18 | **stable 最新追従、edition 2024**。MSRV は明記するが積極的に上げる | 初期利用者は最新 stable 前提で問題ない | Accepted |
 | D19 | **Adventure 相当のテキスト層**を自前で持つ: Component モデル完全版（v0.1 は最小、v0.2 で完全）、Audience 抽象、MiniMessage 実行時パーサ（v0.2）。`text!` は同じパーサをコンパイル時に使い v0.2 に前倒し。翻訳は後回し | ミニゲームで最も書くコード。設定・DB 由来の文字列には実行時パースが要る。Rust に Adventure 相当の定番 crate は無い | Accepted |
 | D20 | Component と MiniMessage は **`lodeframe-text` crate** に置き、protocol と macros の両方が依存する。Audience は本体 | macros が protocol（生成データ込み）に依存するとマクロのビルドが重い。ボット・proxy からも単独で使える明確な境界 | Accepted |
+| D21 | 利用者向けに**ヘッドレステストハーネス**を提供する（`lodeframe` の `test-util` feature）。`TestEnv` でネットワークなしに Instance を作り、`tick(n)` で時間を手動で進め、`FakePlayer` でパケットを注入し、送信パケットと発火イベントを assert する。v0.1 から用意し、以後の API は追加と同時にハーネス対応する | 単一スレッド所有（D6）なので決定的に tick を進められる。通常の `#[test]` で高速に動く。別 crate にせず feature にすることで内部状態に触れられる | Accepted |

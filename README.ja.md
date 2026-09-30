@@ -20,6 +20,7 @@ Rust で組み立てる。
 - **素直なイベント API**: 階層イベントツリーへの型付きハンドラ登録（例: `node.on::<PlayerChat>(|ev, ctx| ..)`）
 - **Adventure 相当のテキスト層**: リッチな Component、MiniMessage パーサ、メッセージ・Title・ActionBar・Sound・BossBar を送る Audience
 - **マクロによる開発体験**: `derive(Encode, Decode)`、`#[command]`、`derive(Event)`、テキスト・アイテム・GUI の宣言的マクロ
+- **テストしやすい設計**: `test-util` feature のヘッドレス `TestEnv` で tick を手動で進め、fake player を操作できる。ポートを開かずに通常の `#[test]` でゲームロジックを検証できる
 - **軽さを計測で示す**: メモリ・起動時間・ボット負荷のベンチマークを Minestom と比較する
 
 ## 目標外

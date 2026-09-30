@@ -19,6 +19,7 @@ on top of its protocol, world, entity and event APIs.
 - **Straightforward events**: typed handlers on a hierarchical event tree, e.g. `node.on::<PlayerChat>(|ev, ctx| ..)`
 - **Adventure-style text**: rich components, a MiniMessage parser, and audiences for messages, titles, action bars, sounds and boss bars
 - **Macros for developer experience**: `derive(Encode, Decode)`, `#[command]`, `derive(Event)`, declarative text/item/GUI macros
+- **Testable by design**: a headless `TestEnv` (behind the `test-util` feature) steps ticks manually and drives fake players, so game logic runs in plain `#[test]`s without opening a port
 - **Measurably lightweight**: memory, startup and bot-load benchmarks compared against Minestom
 
 ## Non-goals
