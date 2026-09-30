@@ -17,6 +17,13 @@ paths:
 - `lodeframe-text` は protocol・macros の両方から使われる。これらのどちらにも依存しない（D20）
 - 利用者は `lodeframe` だけに依存すれば全部触れる。新しい公開型は facade から re-export する（D14）
 - proc-macro は `lodeframe-macros` にだけ置く。proc-macro crate は他の型を export できないため
+- derive の生成コードは既定で `::lodeframe::protocol` を指す。protocol 内部では型に `#[lodeframe(crate = crate)]` を付ける。facade だけに依存する利用者のコードを動かすため（D22）
+- derive の誤用はコンパイルエラーにし、`crates/lodeframe/tests/ui/` に trybuild のケースを足す。rustc 自身が出すエラーは snapshot に混ぜない（rustc の版で壊れるため）
+
+## ライセンス表記
+
+- 新しい `.rs` ファイルは 1 行目に `// SPDX-License-Identifier: Apache-2.0 OR MIT` を置く。crate 単位で配布されてもライセンスが分かるように（D17）。`mise run lint:license` が検査する
+- `crates/lodeframe/tests/ui/` の trybuild 用ファイルは対象外。snapshot が行番号を含み、1 行増えると全部書き直しになるため
 
 ## 並行モデル
 

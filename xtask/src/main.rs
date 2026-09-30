@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Developer tasks: `cargo xtask <task>`.
 
 // Planned tasks: datagen (M1-05), bot (M1-16), bench (M1-18).

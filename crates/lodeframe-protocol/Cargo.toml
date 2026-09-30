@@ -12,3 +12,4 @@ workspace = true
 
 [dependencies]
 lodeframe-text.workspace = true
+lodeframe-macros.workspace = true
