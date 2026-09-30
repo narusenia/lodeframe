@@ -46,19 +46,36 @@ impl Decode for Uuid {
     }
 }
 
-/// A set of bits, sent as a length-prefixed array of longs (bit 0 is the lowest bit of the first long).
+/// A set of bits (bit 0 is the lowest bit of the first long).
+///
+/// Sent as Java's `BitSet.toByteArray()`: a length-prefixed byte array, little-endian, without
+/// trailing zero bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct BitSet(pub Vec<u64>);
 
 impl Encode for BitSet {
     fn encode(&self, w: &mut impl Write) -> Result<()> {
-        self.0.encode(w)
+        let mut bytes: Vec<u8> = self.0.iter().flat_map(|l| l.to_le_bytes()).collect();
+        while bytes.last() == Some(&0) {
+            bytes.pop();
+        }
+        bytes.encode(w)
     }
 }
 
 impl Decode for BitSet {
     fn decode(r: &mut &[u8]) -> Result<Self> {
-        Vec::decode(r).map(Self)
+        let bytes = Vec::<u8>::decode(r)?;
+        Ok(Self(
+            bytes
+                .chunks(8)
+                .map(|c| {
+                    let mut l = [0u8; 8];
+                    l[..c.len()].copy_from_slice(c);
+                    u64::from_le_bytes(l)
+                })
+                .collect(),
+        ))
     }
 }
 
@@ -99,8 +116,9 @@ mod tests {
 
     #[test]
     fn bitset_is_a_length_prefixed_long_array() {
-        assert_eq!(encoded(&BitSet(vec![1])), [1, 0, 0, 0, 0, 0, 0, 0, 1]);
-        roundtrip(BitSet(vec![u64::MAX, 0, 5]));
+        assert_eq!(encoded(&BitSet(vec![0x0102])), [2, 2, 1]);
+        assert_eq!(encoded(&BitSet(vec![0, 0])), [0]);
+        roundtrip(BitSet(vec![u64::MAX, 5]));
         roundtrip(BitSet::default());
     }
 }
