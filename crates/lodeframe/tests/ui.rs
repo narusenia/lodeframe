@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Misuse of the derives must fail to compile with a message that points at the cause.
 
 #[test]

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{DeriveInput, Ident, LitInt, parse_quote};

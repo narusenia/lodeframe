@@ -14,6 +14,17 @@ run = "cargo fmt --all -- --check"
 description = "Apply formatting"
 run = "cargo fmt --all"
 
+[tasks."lint:license"]
+description = "Every .rs file starts with the SPDX header (trybuild fixtures excepted)"
+run = '''
+header='// SPDX-License-Identifier: Apache-2.0 OR MIT'
+missing=0
+for f in $(git ls-files '*.rs' | grep -v '/tests/ui/'); do
+  [ "$(head -n1 "$f")" = "$header" ] || { echo "missing SPDX header: $f"; missing=1; }
+done
+exit $missing
+'''
+
 [tasks.clippy]
 description = "Clippy with warnings denied"
 run = "cargo clippy --workspace --all-targets -- -D warnings"
@@ -23,8 +34,8 @@ description = "Workspace test suite"
 run = "cargo test --workspace"
 
 [tasks.check]
-description = "Full verification (fmt + clippy + test)"
-depends = ["fmt", "clippy", "test"]
+description = "Full verification (fmt + license + clippy + test)"
+depends = ["fmt", "lint:license", "clippy", "test"]
 
 [tasks.msrv]
 description = "Build the workspace on the MSRV declared in Cargo.toml"

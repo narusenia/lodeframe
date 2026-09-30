@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! A minimal, lightweight Minecraft: Java Edition server library.
 //!
 //! This crate is the facade: it re-exports the other lodeframe crates.

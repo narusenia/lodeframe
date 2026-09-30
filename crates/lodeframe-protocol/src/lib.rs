@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Minecraft protocol types, packets and generated data. Independent of the server.
 
 mod codec;
