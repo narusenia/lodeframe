@@ -5,7 +5,6 @@
 
 [tools]
 rust = { version = "1.95", components = "rustfmt,clippy", profile = "minimal" }
-jq = "1.8"
 
 [tasks.fmt]
 description = "Check formatting"
@@ -30,6 +29,6 @@ depends = ["fmt", "clippy", "test"]
 [tasks.msrv]
 description = "Build the workspace on the MSRV declared in Cargo.toml"
 run = '''
-v=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="lodeframe") | .rust_version')
+v=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)
 mise exec "rust@$v" -- cargo build --workspace
 '''
