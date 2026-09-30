@@ -22,6 +22,10 @@ pub struct Input {
     pub blocks: Value,
     pub packets: Value,
     pub registries: Value,
+    /// `(registry id, sorted entry names)` for the data-driven registries the client syncs.
+    pub datapack_registries: Vec<(String, Vec<String>)>,
+    /// Raw tag files: registry name (`block`, `worldgen/biome`) -> tag name -> `values`.
+    pub tags: BTreeMap<String, BTreeMap<String, Vec<String>>>,
 }
 
 /// `(file name, source)` for every generated file.
@@ -31,6 +35,11 @@ pub fn generate(input: &Input) -> Result<Vec<(&'static str, String)>> {
         ("packet_ids.rs", packet_ids(&input.packets)?),
         ("blocks.rs", blocks(&input.blocks, &input.registries)?),
         ("entity_types.rs", entity_types(&input.registries)?),
+        (
+            "datapack_registries.rs",
+            datapack_registries(&input.datapack_registries)?,
+        ),
+        ("tags.rs", tags(input)?),
     ])
 }
 
@@ -301,11 +310,156 @@ fn entity_types(registries: &Value) -> Result<String> {
     Ok(out)
 }
 
+fn datapack_registries(registries: &[(String, Vec<String>)]) -> Result<String> {
+    let mut out = String::from(HEADER);
+    out.push_str("/// `(registry id, entry names)`. Entry order is the network id order.\n");
+    writeln!(
+        out,
+        "pub static DATAPACK_REGISTRIES: [(&str, &[&str]); {}] = [",
+        registries.len()
+    )?;
+    for (id, names) in registries {
+        let list: Vec<String> = names.iter().map(|n| format!("{n:?}")).collect();
+        writeln!(out, "({id:?}, &[{}]),", list.join(", "))?;
+    }
+    out.push_str("];\n");
+    Ok(out)
+}
+
+/// Expands `#tag` references so every tag is a flat list of entry names.
+fn flatten(
+    tags: &BTreeMap<String, Vec<String>>,
+    tag: &str,
+    stack: &mut Vec<String>,
+) -> Result<Vec<String>> {
+    if stack.iter().any(|t| t == tag) {
+        return Err(format!("tag cycle through {tag}").into());
+    }
+    let values = tags.get(tag).ok_or_else(|| format!("unknown tag #{tag}"))?;
+    stack.push(tag.to_owned());
+    let mut out: Vec<String> = Vec::new();
+    for v in values {
+        let names = match v.strip_prefix('#') {
+            Some(r) => flatten(
+                tags,
+                r.strip_prefix("minecraft:")
+                    .ok_or("tag from another namespace")?,
+                stack,
+            )?,
+            None => vec![v.clone()],
+        };
+        for n in names {
+            if !out.contains(&n) {
+                out.push(n);
+            }
+        }
+    }
+    stack.pop();
+    Ok(out)
+}
+
+/// `STATIC_TAGS` (entry ids, from `registries.json`) and `DYNAMIC_TAGS` (entry names, to be
+/// resolved against the registry the server actually sends).
+fn tags(input: &Input) -> Result<String> {
+    let mut static_out = Vec::new();
+    let mut dynamic_out = Vec::new();
+    for (registry, tags) in &input.tags {
+        let id = format!("minecraft:{registry}");
+        let mut flat = Vec::new();
+        for tag in tags.keys() {
+            flat.push((tag, flatten(tags, tag, &mut Vec::new())?));
+        }
+        if input.registries.get(&id).is_some() {
+            let ids: std::collections::HashMap<String, u32> =
+                entries_by_id(&input.registries[&id]["entries"], &id)?
+                    .into_iter()
+                    .collect();
+            let mut rows = Vec::new();
+            for (tag, names) in flat {
+                let mut list = Vec::new();
+                for n in names {
+                    let i = ids
+                        .get(&n)
+                        .ok_or_else(|| format!("tag #{tag} in {id} names unknown entry {n}"))?;
+                    list.push(i.to_string());
+                }
+                rows.push(format!(
+                    "({:?}, &[{}])",
+                    format!("minecraft:{tag}"),
+                    list.join(", ")
+                ));
+            }
+            static_out.push(format!("({id:?}, &[{}])", rows.join(", ")));
+        } else {
+            let (_, entries) = input
+                .datapack_registries
+                .iter()
+                .find(|(r, _)| *r == id)
+                .ok_or_else(|| format!("tags for {id}, which is neither static nor synced"))?;
+            let mut rows = Vec::new();
+            for (tag, names) in flat {
+                for n in &names {
+                    if !entries.contains(n) {
+                        return Err(format!("tag #{tag} in {id} names unknown entry {n}").into());
+                    }
+                }
+                let list: Vec<String> = names.iter().map(|n| format!("{n:?}")).collect();
+                rows.push(format!(
+                    "({:?}, &[{}])",
+                    format!("minecraft:{tag}"),
+                    list.join(", ")
+                ));
+            }
+            dynamic_out.push(format!("({id:?}, &[{}])", rows.join(", ")));
+        }
+    }
+    let mut out = String::from(HEADER);
+    out.push_str("/// `[(tag, entries)]` for one registry.\n");
+    out.push_str("pub type TagTable<T> = &'static [(&'static str, &'static [T])];\n\n");
+    out.push_str("/// `(registry, [(tag, entry ids)])` for registries with fixed ids.\n");
+    writeln!(
+        out,
+        "pub static STATIC_TAGS: [(&str, TagTable<u32>); {}] = [{}];\n",
+        static_out.len(),
+        static_out.join(", ")
+    )?;
+    out.push_str(
+        "/// `(registry, [(tag, entry names)])` for registries whose ids the server decides.\n",
+    );
+    writeln!(
+        out,
+        "pub static DYNAMIC_TAGS: [(&str, TagTable<&str>); {}] = [{}];",
+        dynamic_out.len(),
+        dynamic_out.join(", ")
+    )?;
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn tag_references_are_expanded_and_cycles_are_rejected() {
+        let tags = |rows: &[(&str, &[&str])]| -> BTreeMap<String, Vec<String>> {
+            rows.iter()
+                .map(|(t, v)| (t.to_string(), v.iter().map(|s| s.to_string()).collect()))
+                .collect()
+        };
+        let ok = tags(&[
+            ("a", &["minecraft:x", "#minecraft:b"]),
+            ("b", &["minecraft:y", "minecraft:x"]),
+        ]);
+        assert_eq!(
+            flatten(&ok, "a", &mut Vec::new()).unwrap(),
+            ["minecraft:x", "minecraft:y"]
+        );
+        let cyc = tags(&[("a", &["#minecraft:b"]), ("b", &["#minecraft:a"])]);
+        assert!(flatten(&cyc, "a", &mut Vec::new()).is_err());
+        assert!(flatten(&ok, "missing", &mut Vec::new()).is_err());
+    }
 
     fn registry(names: &[&str]) -> Value {
         let entries: serde_json::Map<String, Value> = names

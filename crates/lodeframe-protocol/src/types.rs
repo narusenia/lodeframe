@@ -7,6 +7,17 @@ use crate::{Decode, Encode, Result};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Uuid(pub u128);
 
+impl Uuid {
+    /// The UUID a vanilla server gives `name` in offline mode: a version 3 UUID of
+    /// `OfflinePlayer:<name>`.
+    pub fn offline(name: &str) -> Self {
+        let mut hash = crate::md5::md5(format!("OfflinePlayer:{name}").as_bytes());
+        hash[6] = hash[6] & 0x0f | 0x30;
+        hash[8] = hash[8] & 0x3f | 0x80;
+        Self(u128::from_be_bytes(hash))
+    }
+}
+
 impl Encode for Uuid {
     fn encode(&self, w: &mut impl Write) -> Result<()> {
         self.0.encode(w)
@@ -39,6 +50,15 @@ impl Decode for BitSet {
 mod tests {
     use super::*;
     use crate::codec::tests::{encoded, roundtrip};
+
+    #[test]
+    fn offline_uuid_matches_vanilla() {
+        // Checked against Python's hashlib for the same name.
+        assert_eq!(
+            Uuid::offline("Notch"),
+            Uuid(0xb50ad385_829d_3141_a216_7e7d7539ba7f)
+        );
+    }
 
     #[test]
     fn uuid_is_most_significant_long_first() {
