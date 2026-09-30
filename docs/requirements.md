@@ -16,6 +16,7 @@ vanilla 挙動（mob AI、レッドストーン、ワールド生成、クラフ
 | REQ-PROTO-001 | プロトコル基本型と Encode / Decode | Must | v0.1 |
 | REQ-PROTO-002 | vanilla 生成データからの codegen | Must | v0.1 |
 | REQ-PROTO-003 | NBT | Must | v0.1 |
+| REQ-PROTO-004 | 座標・ベクトル型 | Must | v0.1 |
 | REQ-NET-001 | 接続層（フレーミング・圧縮・状態遷移） | Must | v0.1 |
 | REQ-NET-002 | Status ping | Must | v0.1 |
 | REQ-NET-003 | offline login と configuration | Must | v0.1 |
@@ -73,6 +74,14 @@ vanilla 挙動（mob AI、レッドストーン、ワールド生成、クラフ
 - ネットワーク NBT（名前なしルート）の読み書き。
 - **受入条件**
   - [ ] vanilla のレジストリデータを NBT で送ってクライアントが受理する
+
+### REQ-PROTO-004: 座標・ベクトル型
+
+- `Vec3`（glam の `DVec3`）、`Pos`（`DVec3` + yaw / pitch）、`BlockPos`（i32）。`BlockPos` は wire のパック形式、チャンク・セクション座標への変換、`Pos` との相互変換を持つ（D23）。
+- **受入条件**
+  - [ ] `BlockPos` ⇔ チャンク座標・セクション内座標の変換が負の座標でも正しい（床除算）
+  - [ ] `Pos` → `BlockPos` はブロックの floor になる（負の座標でも）
+  - [ ] `Vec3` は `Encode` / `Decode` できる（x, y, z の f64）
 
 ## NET
 
