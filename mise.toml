@@ -5,8 +5,6 @@
 
 [tools]
 rust = { version = "1.95", components = "rustfmt,clippy", profile = "minimal" }
-# only `cargo xtask datagen` needs it (vanilla data generator)
-java = "25"
 
 [tasks.fmt]
 description = "Check formatting"
@@ -15,6 +13,12 @@ run = "cargo fmt --all -- --check"
 [tasks."fmt:fix"]
 description = "Apply formatting"
 run = "cargo fmt --all"
+
+[tasks.datagen]
+description = "Regenerate protocol data from the vanilla data generator (usage: mise run datagen [version])"
+# Java is scoped to this task so that CI and normal builds never install it.
+tools = { java = "25" }
+run = "cargo xtask datagen"
 
 [tasks."lint:license"]
 description = "Every .rs file starts with the SPDX header (trybuild fixtures excepted)"
