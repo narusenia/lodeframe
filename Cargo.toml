@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask", "examples/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/narusenia/lodeframe"
+
+[workspace.dependencies]
+lodeframe-text = { path = "crates/lodeframe-text", version = "0.0.0" }
+lodeframe-protocol = { path = "crates/lodeframe-protocol", version = "0.0.0" }
+lodeframe-macros = { path = "crates/lodeframe-macros", version = "0.0.0" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
