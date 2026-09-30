@@ -1,12 +1,27 @@
 name: CI
 
+# Documentation-only changes skip CI. Changes to the workflows themselves do not.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
   pull_request:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+
+# Newer pushes to the same branch/PR supersede running checks.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
+  # Incremental artifacts never pay off on a fresh runner.
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   check:
@@ -15,19 +30,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: jdx/mise-action@v2
       - uses: Swatinem/rust-cache@v2
-      - run: mise run check
+      - name: Format
+        run: mise run fmt
+      - name: Clippy
+        run: mise run clippy
+      - name: Test
+        run: mise run test
 
   msrv:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Read MSRV
-        id: msrv
-        run: echo "version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="lodeframe") | .rust_version')" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: jdx/mise-action@v2
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace
-        env:
-          RUSTFLAGS: -D warnings
+      - name: Build on MSRV
+        run: mise run msrv
