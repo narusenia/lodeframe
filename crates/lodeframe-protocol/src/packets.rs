@@ -224,6 +224,30 @@ pub mod configuration {
     pub struct AckFinishConfiguration;
 }
 
+/// Play state. Only what the connection layer itself needs; the game packets come with the
+/// units that use them.
+pub mod play {
+    use crate::{Decode, Encode, Packet};
+
+    /// Sent now and then; the client must answer with the same id or is timed out.
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::KEEP_ALIVE, state = Play, side = Clientbound)]
+    pub struct KeepAlive {
+        /// Echoed back by the client.
+        pub id: i64,
+    }
+
+    /// The client's answer to [`KeepAlive`].
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::serverbound::KEEP_ALIVE, state = Play, side = Serverbound)]
+    pub struct KeepAliveResponse {
+        /// The id of the [`KeepAlive`] being answered.
+        pub id: i64,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{configuration::*, login::*};

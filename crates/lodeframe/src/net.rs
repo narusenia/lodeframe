@@ -131,31 +131,54 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
     }
 }
 
+/// Whether `e` is just the peer going away rather than something wrong.
+fn is_disconnect(e: &Error) -> bool {
+    use io::ErrorKind::{BrokenPipe, ConnectionAborted, ConnectionReset, TimedOut, UnexpectedEof};
+    matches!(e, Error::Io(e) if matches!(e.kind(), UnexpectedEof | ConnectionReset | ConnectionAborted | BrokenPipe | TimedOut))
+}
+
 /// Accepts connections forever, running `handler` for each one after its handshake.
 ///
 /// A connection that fails its handshake or whose handler errors is dropped; the others go on.
-// ponytail: failures are dropped silently until the server has a logging story
+/// Each connection runs in a `conn` span carrying the peer address. A peer simply going away
+/// is logged at debug, anything else at warn.
 pub async fn serve<F, Fut>(listener: TcpListener, config: Config, handler: F) -> io::Result<()>
 where
     F: Fn(Connection<TcpStream>, Intention) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<()>> + Send + 'static,
 {
+    use tracing::Instrument;
+
     let handler = Arc::new(handler);
     loop {
-        let stream = match listener.accept().await {
-            Ok((stream, _)) => stream,
-            Err(_) => {
+        let (stream, peer) = match listener.accept().await {
+            Ok(accepted) => accepted,
+            Err(e) => {
                 // e.g. out of file descriptors: back off instead of spinning
+                tracing::warn!(error = %e, "accept failed");
                 sleep(Duration::from_millis(100)).await;
                 continue;
             }
         };
         let handler = handler.clone();
         let mut conn = Connection::new(stream, config.read_timeout);
-        tokio::spawn(async move {
-            if let Ok(intention) = conn.read_handshake().await {
-                let _ = handler(conn, intention).await;
+        let span = tracing::info_span!("conn", %peer);
+        tokio::spawn(
+            async move {
+                let intention = match conn.read_handshake().await {
+                    Ok(i) => i,
+                    Err(e) => {
+                        tracing::debug!(error = %e, "handshake failed");
+                        return;
+                    }
+                };
+                match handler(conn, intention).await {
+                    Ok(()) => tracing::debug!("connection closed"),
+                    Err(e) if is_disconnect(&e) => tracing::debug!(error = %e, "connection closed"),
+                    Err(e) => tracing::warn!(error = %e, "connection failed"),
+                }
             }
-        });
+            .instrument(span),
+        );
     }
 }

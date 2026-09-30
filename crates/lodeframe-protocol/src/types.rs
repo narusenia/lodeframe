@@ -18,6 +18,22 @@ impl Uuid {
     }
 }
 
+impl std::fmt::Display for Uuid {
+    /// The usual hyphenated lowercase form, `b50ad385-829d-3141-a216-7e7d7539ba7f`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let h = format!("{:032x}", self.0);
+        write!(
+            f,
+            "{}-{}-{}-{}-{}",
+            &h[..8],
+            &h[8..12],
+            &h[12..16],
+            &h[16..20],
+            &h[20..]
+        )
+    }
+}
+
 impl Encode for Uuid {
     fn encode(&self, w: &mut impl Write) -> Result<()> {
         self.0.encode(w)
@@ -50,6 +66,14 @@ impl Decode for BitSet {
 mod tests {
     use super::*;
     use crate::codec::tests::{encoded, roundtrip};
+
+    #[test]
+    fn uuid_displays_hyphenated() {
+        assert_eq!(
+            Uuid::offline("Notch").to_string(),
+            "b50ad385-829d-3141-a216-7e7d7539ba7f"
+        );
+    }
 
     #[test]
     fn offline_uuid_matches_vanilla() {
