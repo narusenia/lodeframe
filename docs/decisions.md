@@ -15,11 +15,13 @@
 | D8 | 認証は **Velocity modern forwarding 先行（v0.2）→ 単体 online mode（v0.3）** | forwarding は HMAC 検証だけで軽い。Minestom 利用者の実態も proxy 配下運用が主流 | Accepted |
 | D9 | イベントは**型付きハンドラ登録 + 階層ノード**（Minestom の EventNode 相当） | 複数ミニゲームの同居・付け外しに階層が要る | Accepted |
 | D10 | ワールドは **`ChunkLoader` trait + Anvil 読込のみ**。保存は利用者実装 | ミニゲームは毎回初期化が基本。バニラで建築したロビー配布はカバーする | Accepted |
-| D11 | proc-macro は **4 系統**: `derive(Encode, Decode)`（v0.1）、`#[command]`・`#[event]` / `derive(Event)`（v0.2）、宣言的 UI（`text!` / `item!` / GUI、v0.3） | 開発体験の向上。コンパイル時間とエラーの分かりにくさはコストとして受け入れ、段階導入する | Accepted |
+| D11 | proc-macro は **4 系統**: `derive(Encode, Decode)`（v0.1）、`#[command]`・`#[event]` / `derive(Event)`（v0.2）、宣言的 UI（`text!` / `item!` / GUI、v0.3） | 開発体験の向上。コンパイル時間とエラーの分かりにくさはコストとして受け入れ、段階導入する | Superseded in part by D19（`text!` を v0.2 へ） |
 | D12 | 性能は**実測で比較可能な目標**を置き、Minestom と同条件で比べるベンチを持つ | 「lightweight」を主張する根拠 | Accepted |
 | D13 | 標準機能は **Minestom 相当**。AI・pathfinding・戦闘は持たず、必要なら後で util crate として配る | minimal の境界線 | Accepted |
-| D14 | crate は**最小分割 + facade**（protocol / macros / 本体）。境界が固まったら分割を再検討 | 初期は境界が動くので細分割は摩擦になる。protocol はボット・proxy 用途で単独利用できるよう分ける | Accepted |
+| D14 | crate は**最小分割 + facade**（protocol / macros / 本体）。境界が固まったら分割を再検討 | 初期は境界が動くので細分割は摩擦になる。protocol はボット・proxy 用途で単独利用できるよう分ける | Accepted（D20 で text を追加分割） |
 | D15 | テストは **単体 + 自前ボット**。ボットは lodeframe-protocol で書き、統合テストと負荷試験に兼用 | azalea はボット 1 体が重く負荷試験側がボトルネックになり、版追従がずれるとテストが止まる | Accepted |
 | D16 | ハンドラは**同期 fn 固定**。非同期処理は `ctx.spawn(async {..}).then(|res, ctx| ..)` で tokio に投げ、結果は同じ Instance スレッドで受ける。ログイン前検証用の async イベントだけ別枠 | async ハンドラは await 中に `&mut World` を保持できず所有モデルと衝突し、tick 遅延の温床になる | Accepted |
 | D17 | OSS、**MIT OR Apache-2.0**、crates.io 公開 | Rust エコシステム標準 | Accepted |
 | D18 | **stable 最新追従、edition 2024**。MSRV は明記するが積極的に上げる | 初期利用者は最新 stable 前提で問題ない | Accepted |
+| D19 | **Adventure 相当のテキスト層**を自前で持つ: Component モデル完全版（v0.1 は最小、v0.2 で完全）、Audience 抽象、MiniMessage 実行時パーサ（v0.2）。`text!` は同じパーサをコンパイル時に使い v0.2 に前倒し。翻訳は後回し | ミニゲームで最も書くコード。設定・DB 由来の文字列には実行時パースが要る。Rust に Adventure 相当の定番 crate は無い | Accepted |
+| D20 | Component と MiniMessage は **`lodeframe-text` crate** に置き、protocol と macros の両方が依存する。Audience は本体 | macros が protocol（生成データ込み）に依存するとマクロのビルドが重い。ボット・proxy からも単独で使える明確な境界 | Accepted |

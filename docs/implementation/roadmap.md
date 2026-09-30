@@ -29,15 +29,15 @@
 
 ### v0.1 — 接続〜スポーン + マルチプレイ基礎
 
-REQ-PROTO-001〜003, REQ-NET-001〜003, REQ-WORLD-001〜002, REQ-ENT-001, REQ-API-001〜002, REQ-MACRO-001, REQ-INFRA-001〜002
+REQ-PROTO-001〜003, REQ-NET-001〜003, REQ-WORLD-001〜002, REQ-ENT-001, REQ-API-001〜002, REQ-TEXT-001（最小）, REQ-MACRO-001, REQ-INFRA-001〜002
 
 完了の目安: vanilla クライアント 2 台が offline mode で平坦ワールドに入り、互いが見え、チャットとブロック設置・破壊ができる。
 
 ### v0.2 — proxy 運用とゲームを作れる API
 
-REQ-AUTH-001, REQ-ENT-002〜003, REQ-API-003〜004, REQ-MACRO-002〜003
+REQ-AUTH-001, REQ-ENT-002〜003, REQ-API-003〜004, REQ-TEXT-001〜003, REQ-MACRO-002〜003, REQ-MACRO-005
 
-完了の目安: Velocity 配下で、コマンドとインベントリ GUI を使う簡単なミニゲームが examples に書ける。
+完了の目安: Velocity 配下で、コマンド・インベントリ GUI・MiniMessage 装飾・Title / BossBar を使う簡単なミニゲームが examples に書ける。
 
 ### v0.3 — 単体公開と実ワールド
 
@@ -54,6 +54,7 @@ REQ-PERF-001, REQ-INFRA-003
 - util crate（AI・pathfinding・戦闘）— D13
 - Instance 内並列化（region 分割）— D6
 - 軽量独自ワールド形式（Polar 的）
+- サーバー側翻訳（GlobalTranslator 相当）— D19
 - WASM プラグイン層（MoonBit 等でゲームロジックを書く）
 
 ## リスク

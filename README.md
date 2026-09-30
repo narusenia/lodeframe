@@ -17,6 +17,7 @@ on top of its protocol, world, entity and event APIs.
 - **Latest protocol only**: tracks the latest Minecraft release. Put ViaProxy in front for older clients
 - **Lock-free game state**: each `Instance` (world) is owned by a single thread and ticked at 20 TPS. Networking runs on tokio
 - **Straightforward events**: typed handlers on a hierarchical event tree, e.g. `node.on::<PlayerChat>(|ev, ctx| ..)`
+- **Adventure-style text**: rich components, a MiniMessage parser, and audiences for messages, titles, action bars, sounds and boss bars
 - **Macros for developer experience**: `derive(Encode, Decode)`, `#[command]`, `derive(Event)`, declarative text/item/GUI macros
 - **Measurably lightweight**: memory, startup and bot-load benchmarks compared against Minestom
 
@@ -30,8 +31,8 @@ AI, pathfinding and combat may come later as separate util crates.
 | Milestone | Scope |
 |---|---|
 | v0.1 | Login, flat world, movement, player visibility, chat, block place/break |
-| v0.2 | Velocity modern forwarding, commands, entities and simple physics, inventories, async tasks |
-| v0.3 | Online mode, Anvil loading, lighting, multiple instances, scoreboards, UI macros |
+| v0.2 | Velocity modern forwarding, commands, entities and simple physics, inventories, async tasks, text components / MiniMessage / audiences |
+| v0.3 | Online mode, Anvil loading, lighting, multiple instances, scoreboards, item/GUI macros |
 | v0.4 | Performance targets met, crates.io release |
 
 Details live in [`docs/`](docs/README.md). Those documents are written in Japanese.
