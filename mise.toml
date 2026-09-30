@@ -26,3 +26,10 @@ run = "cargo test --workspace"
 [tasks.check]
 description = "Full verification (fmt + clippy + test)"
 depends = ["fmt", "clippy", "test"]
+
+[tasks.msrv]
+description = "Build the workspace on the MSRV declared in Cargo.toml"
+run = '''
+v=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="lodeframe") | .rust_version')
+mise exec "rust@$v" -- cargo build --workspace
+'''
