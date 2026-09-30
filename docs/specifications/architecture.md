@@ -48,6 +48,12 @@ lodeframe/
 - `ctx.spawn(fut).then(cb)`: fut は tokio で実行、結果は Instance の受信 channel に戻り、次 tick 冒頭で cb が `&mut` 付きで走る。
 - グローバル可変シングルトンは置かない。サーバー全体の共有物（レジストリ等）は起動時に確定し不変で共有する。
 
+## テストハーネス（D21）
+
+- tick ループは実時間を直接読まず、時計を差し替え可能にする。本番は 50ms 周期で回し、`TestEnv` は `tick(n)` で同期的に進める。
+- `TestEnv` では conn task の代わりに `FakePlayer` が Instance の inbound channel に直接パケットを入れ、outbound を記録する。エンコード層を通すかどうかは選択可能にする（既定は通さない）。
+- `ctx.spawn` は `TestEnv` 内では current-thread runtime で実行し、`run_until_idle()` で完了させる。
+
 ## イベント（D9）
 
 - `EventNode` は木。ルート（サーバー全体）と Instance ごとのノードがあり、利用者は子ノードを付け外しする。

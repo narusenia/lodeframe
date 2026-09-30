@@ -46,6 +46,7 @@ vanilla 挙動（mob AI、レッドストーン、ワールド生成、クラフ
 | REQ-INFRA-001 | CI | Must | v0.1 |
 | REQ-INFRA-002 | 自前ボットによる統合・負荷試験 | Must | v0.1 |
 | REQ-INFRA-003 | crates.io 公開 | Must | v0.4 |
+| REQ-INFRA-004 | 利用者向けテストハーネス | Must | v0.1〜 |
 
 ---
 
@@ -290,3 +291,12 @@ Adventure 相当の層（D19）。Component と MiniMessage は `lodeframe-text`
 
 - **受入条件**
   - [ ] MIT OR Apache-2.0 で 3 crate を公開し、docs.rs でドキュメントが読める
+
+### REQ-INFRA-004: 利用者向けテストハーネス
+
+- `lodeframe` の `test-util` feature（D21）。`TestEnv`（ネットワーク・実時間なしの Instance）、`env.tick(n)`、`FakePlayer`（パケット注入）、送信パケットと発火イベントの記録。`ctx.spawn` の future は `env.run_until_idle()` で完了まで進める。
+- v0.1 は接続・移動・チャット・ブロック操作まで。以後の API（コマンド、インベントリ、Audience 等）は追加と同時にハーネスから操作・検証できるようにする。
+- **受入条件**
+  - [ ] 利用者のイベントハンドラを通常の `#[test]` で、ポートを開かずに検証できる
+  - [ ] 同じテストを何度実行しても結果が同じ（実時間・乱数・スレッドのタイミングに依存しない）
+  - [ ] lodeframe 自身の v0.1 以降の機能テストもこのハーネスで書かれている

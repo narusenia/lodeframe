@@ -29,7 +29,7 @@
 
 ### v0.1 — 接続〜スポーン + マルチプレイ基礎
 
-REQ-PROTO-001〜003, REQ-NET-001〜003, REQ-WORLD-001〜002, REQ-ENT-001, REQ-API-001〜002, REQ-TEXT-001（最小）, REQ-MACRO-001, REQ-INFRA-001〜002
+REQ-PROTO-001〜003, REQ-NET-001〜003, REQ-WORLD-001〜002, REQ-ENT-001, REQ-API-001〜002, REQ-TEXT-001（最小）, REQ-MACRO-001, REQ-INFRA-001〜002, REQ-INFRA-004
 
 完了の目安: vanilla クライアント 2 台が offline mode で平坦ワールドに入り、互いが見え、チャットとブロック設置・破壊ができる。
 
