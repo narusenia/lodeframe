@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
-//! Answers the server list and accepts offline logins into an empty instance, to check the
+//! Answers the server list and accepts offline logins into a flat world, to check the
 //! whole connection path against a real client:
 //! `cargo run -p lodeframe --example offline_login [addr]`.
 //!
@@ -8,38 +8,18 @@
 use std::sync::Arc;
 
 use lodeframe::{
+    chunk::FlatGenerator,
     clock::SystemClock,
-    configuration,
-    instance::{self, Instance, Message, Sessions},
-    login,
+    configuration, instance, login,
     net::{Config, serve},
     play,
     protocol::State,
     registry::Registries,
     status::{self, StatusInfo},
+    world::World,
 };
 use tokio::net::TcpListener;
 use tracing::Level;
-
-/// An instance with nothing in it but the players.
-struct Empty {
-    sessions: Sessions,
-}
-
-impl Instance for Empty {
-    fn handle(&mut self, message: Message) {
-        match message {
-            Message::Join { profile, outbound } => {
-                tracing::info!(name = %profile.name, players = self.sessions.len() + 1, "joined");
-                self.sessions.join(profile.uuid, outbound);
-            }
-            Message::Leave { player } => self.sessions.leave(player),
-            Message::Packet { .. } => {}
-        }
-    }
-
-    fn tick(&mut self) {}
-}
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
@@ -55,10 +35,11 @@ async fn main() -> std::io::Result<()> {
     let listener = TcpListener::bind(&addr).await?;
     tracing::info!(%addr, "listening");
 
-    let lobby = instance::spawn("lobby", SystemClock, || Empty {
-        sessions: Sessions::default(),
-    })?;
     let registries = Arc::new(Registries::vanilla());
+    let world_registries = registries.clone();
+    let lobby = instance::spawn("lobby", SystemClock, move || {
+        World::new(&world_registries, FlatGenerator::default())
+    })?;
     serve(listener, Config::default(), move |mut conn, intention| {
         let (registries, lobby) = (registries.clone(), lobby.clone());
         async move {

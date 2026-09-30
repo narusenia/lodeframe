@@ -12,6 +12,7 @@ pub mod net;
 pub mod play;
 pub mod registry;
 pub mod status;
+pub mod world;
 
 pub use lodeframe_macros as macros;
 pub use lodeframe_protocol as protocol;

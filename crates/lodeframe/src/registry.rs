@@ -71,6 +71,13 @@ impl Registries {
         entries.iter().position(|e| e.id == id)
     }
 
+    /// Number of entries in `registry`.
+    pub fn len(&self, registry: &str) -> Option<usize> {
+        let registry = Identifier::new(registry).ok()?;
+        let (_, entries) = self.registries.iter().find(|(r, _)| *r == registry)?;
+        Some(entries.len())
+    }
+
     /// Every vanilla tag, with entry ids as this `Registries` numbers them.
     ///
     /// Tags of registries with fixed ids (blocks, items, ...) come straight from the
