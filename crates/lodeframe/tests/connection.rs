@@ -94,3 +94,33 @@ async fn a_bad_connection_is_dropped_and_the_server_keeps_serving() {
     good.write_packet(&intention(1)).await.unwrap();
     assert_eq!(good.read_frame().await.unwrap(), [0x00, b'o', b'k']);
 }
+
+#[tokio::test]
+async fn the_server_list_ping_is_answered() {
+    use lodeframe::{
+        protocol::packets::status::{PingRequest, PongResponse, StatusRequest, StatusResponse},
+        status::{StatusInfo, respond},
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(serve(
+        listener,
+        Config::default(),
+        |mut conn, _| async move {
+            let mut info = StatusInfo::new("hello");
+            info.online = 3;
+            respond(&mut conn, &info).await
+        },
+    ));
+
+    let mut c = Connection::new(TcpStream::connect(addr).await.unwrap(), T);
+    c.write_packet(&intention(1)).await.unwrap();
+    c.write_packet(&StatusRequest).await.unwrap();
+    let StatusResponse { json } = c.read_packet().await.unwrap();
+    assert!(
+        json.contains(r#""text":"hello""#) && json.contains(r#""online":3"#),
+        "{json}"
+    );
+    c.write_packet(&PingRequest { payload: 42 }).await.unwrap();
+    assert_eq!(c.read_packet::<PongResponse>().await.unwrap().payload, 42);
+}
