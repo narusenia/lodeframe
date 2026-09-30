@@ -20,6 +20,11 @@ paths:
 - derive の生成コードは既定で `::lodeframe::protocol` を指す。protocol 内部では型に `#[lodeframe(crate = crate)]` を付ける。facade だけに依存する利用者のコードを動かすため（D22）
 - derive の誤用はコンパイルエラーにし、`crates/lodeframe/tests/ui/` に trybuild のケースを足す。rustc 自身が出すエラーは snapshot に混ぜない（rustc の版で壊れるため）
 
+## ライセンス表記
+
+- 新しい `.rs` ファイルは 1 行目に `// SPDX-License-Identifier: Apache-2.0 OR MIT` を置く。crate 単位で配布されてもライセンスが分かるように（D17）。`mise run lint:license` が検査する
+- `crates/lodeframe/tests/ui/` の trybuild 用ファイルは対象外。snapshot が行番号を含み、1 行増えると全部書き直しになるため
+
 ## 並行モデル
 
 - Instance の状態は 1 スレッドが `&mut` で所有する。`Arc<Mutex<_>>` で Instance を共有しない（D6）
