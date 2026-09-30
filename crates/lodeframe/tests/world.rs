@@ -7,7 +7,9 @@ use lodeframe::{
         Vec3,
         ids::play::{clientbound as out, serverbound},
         packets::play::{
-            ForgetLevelChunk, Login, MovePlayerPos, PlayerPosition, SetChunkCacheCenter,
+            AddEntity, EntityPositionSync, ForgetLevelChunk, INPUT_SNEAK, Login, MovePlayerPos,
+            MovePlayerPosRot, MovePlayerRot, PlayerInfoAdd, PlayerInfoRemove, PlayerInput,
+            PlayerPosition, RemoveEntities, RotateHead, SetChunkCacheCenter, SetEntityFlagsAndPose,
         },
     },
     registry::Registries,
@@ -41,7 +43,7 @@ fn a_player_gets_the_world_on_join() {
     assert_eq!(joined[0].id, out::LOGIN);
     assert_eq!(joined[1].id, out::PLAYER_POSITION);
     assert_eq!(count(&joined, out::LEVEL_CHUNK_WITH_LIGHT), 25);
-    assert_eq!(joined.last().unwrap().id, out::CHUNK_BATCH_FINISHED);
+    assert_eq!(count(&joined, out::CHUNK_BATCH_FINISHED), 1);
 
     let login: Login = joined[0].decode().unwrap();
     assert_eq!(login.view_distance.0, 2);
@@ -87,4 +89,119 @@ fn a_broken_packet_drops_the_player() {
     // a move packet with no payload
     env.send_raw(&steve, vec![serverbound::MOVE_PLAYER_POS as u8]);
     assert!(steve.is_disconnected());
+}
+
+fn names(packets: &[PlayerInfoAdd]) -> Vec<&str> {
+    packets
+        .iter()
+        .flat_map(|p| &p.players)
+        .map(|p| p.name.as_str())
+        .collect()
+}
+
+#[test]
+fn players_see_each_other_and_the_tab_list() {
+    let mut env = env();
+    let mut steve = env.connect("Steve");
+    // Steve is in his own list, and nobody else is there to show
+    assert_eq!(names(&steve.drain_as::<PlayerInfoAdd>()), ["Steve"]);
+
+    let mut alex = env.connect("Alex");
+    let steve_id = steve.drain_as::<AddEntity>();
+    assert_eq!(steve_id.len(), 1);
+    assert_eq!(steve.drain_as::<PlayerInfoAdd>().len(), 0);
+
+    // Alex sees the list with both, and Steve's body
+    assert_eq!(names(&alex.drain_as::<PlayerInfoAdd>()), ["Steve", "Alex"]);
+    let seen = steve_id[0].clone();
+    assert_eq!(seen.uuid, alex.uuid());
+
+    env.disconnect(alex);
+    let gone: Vec<RemoveEntities> = steve.drain_as();
+    assert_eq!(gone.len(), 1);
+    assert_eq!(gone[0].entity_ids[0], seen.entity_id);
+}
+
+#[test]
+fn tab_list_entries_are_removed_on_leave() {
+    let mut env = env();
+    let mut steve = env.connect("Steve");
+    let alex = env.connect("Alex");
+    steve.drain();
+    let alex_uuid = alex.uuid();
+    env.disconnect(alex);
+    let packets = steve.drain();
+    let removed = packets
+        .iter()
+        .find(|r| r.is::<PlayerInfoRemove>())
+        .expect("the list entry is removed")
+        .decode::<PlayerInfoRemove>()
+        .unwrap();
+    assert_eq!(removed.uuids, [alex_uuid]);
+    assert!(packets.iter().any(|r| r.is::<RemoveEntities>()));
+}
+
+#[test]
+fn movement_look_and_sneaking_reach_the_other_player_only() {
+    let mut env = env();
+    let mut steve = env.connect("Steve");
+    let mut alex = env.connect("Alex");
+    steve.drain();
+    alex.drain();
+
+    env.send(
+        &alex,
+        &MovePlayerPosRot {
+            position: Vec3::new(3.5, -60.0, 0.5),
+            yaw: 90.0,
+            pitch: 10.0,
+            flags: 1,
+        },
+    );
+    let sync: Vec<EntityPositionSync> = steve.drain_as();
+    assert_eq!(sync.len(), 1);
+    assert_eq!(sync[0].position, Vec3::new(3.5, -60.0, 0.5));
+    assert_eq!((sync[0].yaw, sync[0].pitch), (90.0, 10.0));
+    assert!(
+        alex.drain().is_empty(),
+        "the mover is not told about themselves"
+    );
+
+    // the head follows the yaw
+    env.send(
+        &alex,
+        &MovePlayerRot {
+            yaw: 180.0,
+            pitch: 10.0,
+            flags: 1,
+        },
+    );
+    let packets = steve.drain();
+    let head: RotateHead = packets
+        .iter()
+        .find(|r| r.is::<RotateHead>())
+        .unwrap()
+        .decode()
+        .unwrap();
+    assert_eq!(head.head_yaw, 128);
+
+    // a move that changes nothing is not repeated
+    env.send(
+        &alex,
+        &MovePlayerRot {
+            yaw: 180.0,
+            pitch: 10.0,
+            flags: 1,
+        },
+    );
+    assert!(steve.drain().is_empty());
+
+    env.send(&alex, &PlayerInput { flags: INPUT_SNEAK });
+    let crouch: Vec<SetEntityFlagsAndPose> = steve.drain_as();
+    assert_eq!((crouch[0].flags, crouch[0].pose.0), (2, 5));
+    env.send(&alex, &PlayerInput { flags: INPUT_SNEAK });
+    assert!(steve.drain().is_empty(), "still sneaking: nothing new");
+    env.send(&alex, &PlayerInput { flags: 0 });
+    let stand: Vec<SetEntityFlagsAndPose> = steve.drain_as();
+    assert_eq!((stand[0].flags, stand[0].pose.0), (0, 0));
 }

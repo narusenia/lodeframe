@@ -8,11 +8,16 @@ use crate::{
     instance::{Instance, Message, Sessions},
     login::Profile,
     protocol::{
-        Decode, Identifier, Packet, Result, Uuid, VarInt, Vec3, ids, packet_body,
+        Decode, Identifier, Packet, Result, Uuid, VarInt, Vec3,
+        entity_type::PLAYER,
+        ids, packet_body,
         packets::play::{
-            ChunkBatchFinished, ChunkBatchStart, ForgetLevelChunk, GameEvent,
-            LEVEL_CHUNKS_LOAD_START, Login, MovePlayerPos, MovePlayerPosRot, PlayerPosition,
-            SetChunkCacheCenter, SpawnInfo,
+            AddEntity, ChunkBatchFinished, ChunkBatchStart, EntityPositionSync, FLAG_SNEAKING,
+            ForgetLevelChunk, GameEvent, INPUT_SNEAK, LEVEL_CHUNKS_LOAD_START, Login,
+            MovePlayerPos, MovePlayerPosRot, MovePlayerRot, MovePlayerStatusOnly, ON_GROUND,
+            POSE_CROUCHING, PlayerInfo, PlayerInfoAdd, PlayerInfoRemove, PlayerInput,
+            PlayerPosition, RemoveEntities, RotateHead, SetChunkCacheCenter, SetEntityFlagsAndPose,
+            SpawnInfo, angle,
         },
         split_packet_id,
     },
@@ -25,9 +30,43 @@ const BIOMES: &str = "minecraft:worldgen/biome";
 
 /// One player in a [`World`].
 struct Player {
+    entity_id: i32,
+    name: String,
     pos: Vec3,
+    yaw: f32,
+    pitch: f32,
+    on_ground: bool,
+    sneaking: bool,
     chunk: ChunkPos,
     chunks: ChunkTracker,
+}
+
+impl Player {
+    fn info(&self, uuid: Uuid) -> PlayerInfo {
+        PlayerInfo {
+            uuid,
+            name: self.name.clone(),
+            properties: Vec::new(),
+            // creative, as in `send_join`
+            game_mode: VarInt(1),
+            listed: true,
+            latency: VarInt(0),
+        }
+    }
+
+    fn add_entity(&self, uuid: Uuid) -> AddEntity {
+        AddEntity {
+            entity_id: VarInt(self.entity_id),
+            uuid,
+            kind: PLAYER,
+            position: self.pos,
+            velocity: 0,
+            pitch: angle(self.pitch),
+            yaw: angle(self.yaw),
+            head_yaw: angle(self.yaw),
+            data: VarInt(0),
+        }
+    }
 }
 
 /// An [`Instance`] where players stand on chunks from a [`ChunkLoader`] and walk around.
@@ -67,18 +106,42 @@ impl<L: ChunkLoader> World<L> {
         let id = profile.uuid;
         self.sessions.join(id, outbound);
         self.next_entity_id += 1;
+        let entity_id = self.next_entity_id;
         let chunk = chunk_of(self.spawn);
         let mut player = Player {
+            entity_id,
+            name: profile.name.clone(),
             pos: self.spawn,
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: false,
+            sneaking: false,
             chunk,
             chunks: ChunkTracker::new(),
         };
-        let ok = self.send_join(id, &mut player, self.next_entity_id).is_ok();
-        if ok {
-            tracing::info!(name = %profile.name, players = self.players.len() + 1, "joined");
-            self.players.insert(id, player);
-        } else {
+        if self.send_join(id, &mut player, entity_id).is_err() {
             self.sessions.leave(id);
+            return;
+        }
+        tracing::info!(name = %profile.name, players = self.players.len() + 1, "joined");
+        // the newcomer sees everyone (and themselves in the list), everyone sees the newcomer
+        let mut tab: Vec<PlayerInfo> = self.players.iter().map(|(u, p)| p.info(*u)).collect();
+        tab.push(player.info(id));
+        let existing: Vec<AddEntity> = self.players.iter().map(|(u, p)| p.add_entity(*u)).collect();
+        let arrival = [
+            packet_body(&PlayerInfoAdd::new(vec![player.info(id)])),
+            packet_body(&player.add_entity(id)),
+        ];
+        self.players.insert(id, player);
+        let shown = self
+            .send(id, &PlayerInfoAdd::new(tab))
+            .and_then(|()| existing.iter().try_for_each(|e| self.send(id, e)));
+        if shown.is_err() {
+            self.leave(id);
+            return;
+        }
+        for body in arrival.into_iter().flatten() {
+            self.send_others(id, body);
         }
     }
 
@@ -185,21 +248,70 @@ impl<L: ChunkLoader> World<L> {
 
     fn on_packet(&mut self, id: Uuid, body: &[u8]) -> Result<()> {
         let (packet_id, mut payload) = split_packet_id(body)?;
-        let position = match packet_id {
+        // what the packet says about where the player is and which way they face
+        let (position, rotation, flags) = match packet_id {
             ids::play::serverbound::MOVE_PLAYER_POS => {
-                MovePlayerPos::decode(&mut payload)?.position
+                let p = MovePlayerPos::decode(&mut payload)?;
+                (Some(p.position), None, p.flags)
             }
             ids::play::serverbound::MOVE_PLAYER_POS_ROT => {
-                MovePlayerPosRot::decode(&mut payload)?.position
+                let p = MovePlayerPosRot::decode(&mut payload)?;
+                (Some(p.position), Some((p.yaw, p.pitch)), p.flags)
             }
-            // rotation, teleport and batch answers, ...: nothing to do yet
+            ids::play::serverbound::MOVE_PLAYER_ROT => {
+                let p = MovePlayerRot::decode(&mut payload)?;
+                (None, Some((p.yaw, p.pitch)), p.flags)
+            }
+            ids::play::serverbound::MOVE_PLAYER_STATUS_ONLY => (
+                None,
+                None,
+                MovePlayerStatusOnly::decode(&mut payload)?.flags,
+            ),
+            ids::play::serverbound::PLAYER_INPUT => {
+                let sneaking = PlayerInput::decode(&mut payload)?.flags & INPUT_SNEAK != 0;
+                return self.set_sneaking(id, sneaking);
+            }
+            // teleport and batch answers, ...: nothing to do yet
             _ => return Ok(()),
         };
         let Some(player) = self.players.get_mut(&id) else {
             return Ok(());
         };
-        player.pos = position;
-        let chunk = chunk_of(position);
+        player.on_ground = flags & ON_GROUND != 0;
+        let moved = position.is_some_and(|p| p != player.pos)
+            || rotation.is_some_and(|r| r != (player.yaw, player.pitch));
+        if let Some(p) = position {
+            player.pos = p;
+        }
+        if let Some((yaw, pitch)) = rotation {
+            player.yaw = yaw;
+            player.pitch = pitch;
+        }
+        if moved {
+            let sync = EntityPositionSync {
+                entity_id: VarInt(player.entity_id),
+                path: 0,
+                position: player.pos,
+                yaw: player.yaw,
+                pitch: player.pitch,
+                on_ground: player.on_ground,
+            };
+            let head = RotateHead {
+                entity_id: VarInt(player.entity_id),
+                head_yaw: angle(player.yaw),
+            };
+            // ponytail: an absolute sync per move; send deltas if bandwidth shows in M1-18
+            for body in [packet_body(&sync), packet_body(&head)]
+                .into_iter()
+                .flatten()
+            {
+                self.send_others(id, body);
+            }
+        }
+        let Some(player) = self.players.get_mut(&id) else {
+            return Ok(());
+        };
+        let chunk = chunk_of(player.pos);
         if chunk == player.chunk {
             return Ok(());
         }
@@ -219,9 +331,52 @@ impl<L: ChunkLoader> World<L> {
         self.send_chunks(id, &changes.send)
     }
 
+    fn set_sneaking(&mut self, id: Uuid, sneaking: bool) -> Result<()> {
+        let Some(player) = self.players.get_mut(&id) else {
+            return Ok(());
+        };
+        if player.sneaking == sneaking {
+            return Ok(());
+        }
+        player.sneaking = sneaking;
+        let data = SetEntityFlagsAndPose {
+            entity_id: VarInt(player.entity_id),
+            flags: if sneaking { FLAG_SNEAKING } else { 0 },
+            pose: VarInt(if sneaking { POSE_CROUCHING } else { 0 }),
+        };
+        self.send_others(id, packet_body(&data)?);
+        Ok(())
+    }
+
+    /// Sends `body` to every player but `except`. Players who can't take it are dropped.
+    fn send_others(&mut self, except: Uuid, body: Vec<u8>) {
+        let others: Vec<Uuid> = self
+            .players
+            .keys()
+            .copied()
+            .filter(|u| *u != except)
+            .collect();
+        for other in others {
+            if !self.sessions.send(other, body.clone()) {
+                self.leave(other);
+            }
+        }
+    }
+
     fn leave(&mut self, id: Uuid) {
-        self.players.remove(&id);
         self.sessions.leave(id);
+        let Some(player) = self.players.remove(&id) else {
+            return;
+        };
+        let gone = [
+            packet_body(&RemoveEntities {
+                entity_ids: vec![VarInt(player.entity_id)],
+            }),
+            packet_body(&PlayerInfoRemove { uuids: vec![id] }),
+        ];
+        for body in gone.into_iter().flatten() {
+            self.send_others(id, body);
+        }
     }
 }
 
