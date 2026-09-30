@@ -137,6 +137,16 @@ struct KeepAlive(i64);
 #[packet(id = 0, state = Handshake, side = Serverbound)]
 struct Handshake;
 
+#[derive(Packet)]
+#[packet(id = lodeframe::protocol::ids::status::serverbound::STATUS_REQUEST, state = Status, side = Serverbound)]
+struct StatusRequest;
+
+#[test]
+fn packet_id_from_a_generated_constant() {
+    assert_eq!(StatusRequest::ID, 0);
+    assert_eq!(StatusRequest::STATE, State::Status);
+}
+
 #[test]
 fn packet_constants() {
     assert_eq!(KeepAlive::ID, 0x26);

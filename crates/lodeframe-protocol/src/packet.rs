@@ -48,6 +48,18 @@ mod tests {
         seq: VarInt,
     }
 
+    // The id can be a generated constant, so a regenerated table needs no edits here.
+    #[derive(Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::KEEP_ALIVE, state = Play, side = Clientbound)]
+    struct KeepAlive;
+
+    #[test]
+    fn the_id_can_be_a_generated_constant() {
+        assert_eq!(KeepAlive::ID, crate::ids::play::clientbound::KEEP_ALIVE);
+        assert_eq!(crate::ids::handshake::serverbound::INTENTION, 0);
+    }
+
     #[test]
     fn derives_work_inside_the_protocol_crate() {
         assert_eq!(

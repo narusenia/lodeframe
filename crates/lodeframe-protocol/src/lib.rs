@@ -1,19 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Minecraft protocol types, packets and generated data. Independent of the server.
 
+pub mod block;
 mod codec;
 mod component;
 mod coord;
+pub mod entity_type;
 mod error;
+mod generated;
 mod nbt;
 mod packet;
 mod string;
 mod types;
 mod varint;
 
+pub use block::{Block, BlockInfo, BlockState, Property};
 pub use codec::{Decode, Encode, take};
 pub use coord::{BlockPos, Pos, Vec3};
+pub use entity_type::EntityType;
 pub use error::{Error, Result};
+pub use generated::packet_ids as ids;
+pub use generated::version::{PROTOCOL_VERSION, VERSION_NAME, WORLD_VERSION};
 pub use glam;
 pub use lodeframe_macros::{Decode, Encode, Packet};
 pub use nbt::{Compound, Nbt};
