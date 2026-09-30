@@ -20,6 +20,11 @@ paths:
 - derive の生成コードは既定で `::lodeframe::protocol` を指す。protocol 内部では型に `#[lodeframe(crate = crate)]` を付ける。facade だけに依存する利用者のコードを動かすため（D22）
 - derive の誤用はコンパイルエラーにし、`crates/lodeframe/tests/ui/` に trybuild のケースを足す。rustc 自身が出すエラーは snapshot に混ぜない（rustc の版で壊れるため）
 
+## 再帰とスタック
+
+- 入力を再帰でたどるデコーダには深さ制限を置き、**実測で**決める。NBT は 1 段あたり数 KB 使い、vanilla の上限 512 では 2MB のスレッド（tokio ワーカー）で溢れた。上限を変えるときはスタックを絞ったテストで確かめる（例: `RUST_MIN_STACK=524288`）
+- 入力に含まれる長さで `Vec` を確保する前に、残りバイト数と照らして拒否する（`check_remaining`）
+
 ## ライセンス表記
 
 - 新しい `.rs` ファイルは 1 行目に `// SPDX-License-Identifier: Apache-2.0 OR MIT` を置く。crate 単位で配布されてもライセンスが分かるように（D17）。`mise run lint:license` が検査する
