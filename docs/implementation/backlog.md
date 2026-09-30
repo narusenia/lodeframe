@@ -20,9 +20,9 @@
 | 状態 | ID | 単位 | 依存 | PR |
 |---|---|---|---|---|
 | ✅ | M1-01 | workspace 骨格と CI | — | #1 |
-| 🟡 | M1-02 | 基本型と Encode / Decode trait | M1-01 | |
-| ⬜ | M1-03 | `derive(Encode, Decode)` と `derive(Packet)` | M1-02 | |
-| ⬜ | M1-04 | NBT と最小 Component | M1-02 | |
+| ✅ | M1-02 | 基本型と Encode / Decode trait | M1-01 | (未 PR) |
+| 🟡 | M1-03 | `derive(Encode, Decode)` と `derive(Packet)` | M1-02 | |
+| 🟡 | M1-04 | NBT と最小 Component | M1-02 | |
 | 🟡 | M1-05 | `xtask datagen` | M1-01 | |
 | ⬜ | M1-06 | 接続層 | M1-03, M1-05 | |
 | ⬜ | M1-07 | Status ping | M1-06 | |
