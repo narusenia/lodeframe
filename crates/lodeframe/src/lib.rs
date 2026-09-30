@@ -13,6 +13,8 @@ pub mod net;
 pub mod play;
 pub mod registry;
 pub mod status;
+#[cfg(feature = "test-util")]
+pub mod test_util;
 pub mod world;
 
 pub use lodeframe_macros as macros;

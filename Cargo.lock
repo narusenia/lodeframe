@@ -151,6 +151,7 @@ dependencies = [
 name = "lodeframe"
 version = "0.0.0"
 dependencies = [
+ "lodeframe",
  "lodeframe-macros",
  "lodeframe-protocol",
  "lodeframe-text",

@@ -3,80 +3,88 @@
 
 use lodeframe::{
     chunk::FlatGenerator,
-    instance::{Instance, Message},
-    login::Profile,
     protocol::{
-        Uuid, Vec3, ids::play::clientbound as out, packet_body, packets::play::MovePlayerPos,
-        split_packet_id,
+        Vec3,
+        ids::play::{clientbound as out, serverbound},
+        packets::play::{
+            ForgetLevelChunk, Login, MovePlayerPos, PlayerPosition, SetChunkCacheCenter,
+        },
     },
     registry::Registries,
+    test_util::{Received, TestEnv},
     world::World,
 };
-use tokio::sync::mpsc;
 
-fn ids(rx: &mut mpsc::Receiver<Vec<u8>>) -> Vec<i32> {
-    let mut ids = Vec::new();
-    while let Ok(body) = rx.try_recv() {
-        ids.push(split_packet_id(&body).unwrap().0);
-    }
-    ids
+fn count(received: &[Received], id: i32) -> usize {
+    received.iter().filter(|r| r.id == id).count()
 }
 
-fn count(ids: &[i32], id: i32) -> usize {
-    ids.iter().filter(|i| **i == id).count()
+fn walk(x: f64) -> MovePlayerPos {
+    MovePlayerPos {
+        position: Vec3::new(x, -60.0, 0.5),
+        flags: 1,
+    }
+}
+
+fn env() -> TestEnv<World<FlatGenerator>> {
+    let mut world = World::new(&Registries::vanilla(), FlatGenerator::default());
+    world.view_distance = 2;
+    TestEnv::new(world)
 }
 
 #[test]
-fn a_player_gets_the_world_on_join_and_new_chunks_when_crossing_a_border() {
-    let mut world = World::new(&Registries::vanilla(), FlatGenerator::default());
-    world.view_distance = 2;
-    let (tx, mut rx) = mpsc::channel(1024);
-    let id = Uuid(1);
-    world.handle(Message::Join {
-        profile: Profile {
-            uuid: id,
-            name: "Steve".into(),
-        },
-        outbound: tx,
-    });
+fn a_player_gets_the_world_on_join() {
+    let mut env = env();
+    let mut steve = env.connect("Steve");
 
-    let joined = ids(&mut rx);
-    assert_eq!(joined[0], out::LOGIN);
-    assert_eq!(joined[1], out::PLAYER_POSITION);
+    let joined = steve.drain();
+    assert_eq!(joined[0].id, out::LOGIN);
+    assert_eq!(joined[1].id, out::PLAYER_POSITION);
     assert_eq!(count(&joined, out::LEVEL_CHUNK_WITH_LIGHT), 25);
-    assert_eq!(joined.last(), Some(&out::CHUNK_BATCH_FINISHED));
+    assert_eq!(joined.last().unwrap().id, out::CHUNK_BATCH_FINISHED);
 
-    // inside the same chunk: nothing to send
-    let walk = |x: f64| Message::Packet {
-        player: id,
-        body: packet_body(&MovePlayerPos {
-            position: Vec3::new(x, -60.0, 0.5),
-            flags: 1,
-        })
-        .unwrap(),
-    };
-    world.handle(walk(5.5));
-    assert!(ids(&mut rx).is_empty());
-
-    // one chunk east: a new column of 5 in, the far column of 5 out
-    world.handle(walk(16.5));
-    let moved = ids(&mut rx);
-    assert_eq!(count(&moved, out::SET_CHUNK_CACHE_CENTER), 1);
-    assert_eq!(count(&moved, out::FORGET_LEVEL_CHUNK), 5);
-    assert_eq!(count(&moved, out::LEVEL_CHUNK_WITH_LIGHT), 5);
-
-    // a broken packet drops the player
-    world.handle(Message::Packet {
-        player: id,
-        body: vec![ids_move_pos(), 0],
-    });
-    assert!(rx.try_recv().is_err());
-    assert!(matches!(
-        rx.try_recv(),
-        Err(mpsc::error::TryRecvError::Disconnected)
-    ));
+    let login: Login = joined[0].decode().unwrap();
+    assert_eq!(login.view_distance.0, 2);
+    let at: PlayerPosition = joined[1].decode().unwrap();
+    assert_eq!(at.position, Vec3::new(0.5, -60.0, 0.5));
 }
 
-fn ids_move_pos() -> u8 {
-    lodeframe::protocol::ids::play::serverbound::MOVE_PLAYER_POS as u8
+#[test]
+fn crossing_a_chunk_border_swaps_a_column_of_chunks() {
+    let mut env = env();
+    let mut steve = env.connect("Steve");
+    steve.drain();
+
+    // inside the same chunk: nothing to send
+    env.send(&steve, &walk(5.5));
+    assert!(steve.drain().is_empty());
+
+    // one chunk east: a new column of 5 in, the far column of 5 out
+    env.send(&steve, &walk(16.5));
+    let moved = steve.drain();
+    assert_eq!(count(&moved, out::LEVEL_CHUNK_WITH_LIGHT), 5);
+    let center: SetChunkCacheCenter = moved
+        .iter()
+        .find(|r| r.is::<SetChunkCacheCenter>())
+        .unwrap()
+        .decode()
+        .unwrap();
+    assert_eq!((center.x.0, center.z.0), (1, 0));
+    let mut forgotten = Vec::new();
+    for r in moved.iter().filter(|r| r.is::<ForgetLevelChunk>()) {
+        let f: ForgetLevelChunk = r.decode().unwrap();
+        forgotten.push((f.x, f.z));
+    }
+    assert_eq!(forgotten, [(-2, -2), (-2, -1), (-2, 0), (-2, 1), (-2, 2)]);
+}
+
+#[test]
+fn a_broken_packet_drops_the_player() {
+    let mut env = env();
+    let mut steve = env.connect("Steve");
+    steve.drain();
+
+    // a move packet with no payload
+    env.send_raw(&steve, vec![serverbound::MOVE_PLAYER_POS as u8]);
+    assert!(steve.is_disconnected());
 }
