@@ -64,6 +64,19 @@ pub fn run(version: Option<&str>) -> Result<()> {
         );
     }
 
+    let server_out = dir.join("gen-server");
+    let _ = fs::remove_dir_all(&server_out);
+    let status = Command::new("java")
+        .args(["-DbundlerMainClass=net.minecraft.data.Main", "-jar"])
+        .arg(&jar)
+        .args(["--server", "--output"])
+        .arg(&server_out)
+        .current_dir(&dir)
+        .status()?;
+    if !status.success() {
+        return Err(format!("the server data generator failed ({status})").into());
+    }
+
     let reports = out.join("reports");
     let read = |name: &str| -> Result<Value> {
         Ok(serde_json::from_slice(
@@ -78,6 +91,8 @@ pub fn run(version: Option<&str>) -> Result<()> {
         blocks: read("blocks.json")?,
         packets: read("packets.json")?,
         registries: read("registries.json")?,
+        datapack_registries: datapack_registries(&server_out, &read("datapack.json")?)?,
+        tags: read_tags(&server_out, &read("registries.json")?)?,
     };
 
     let target = root.join("crates/lodeframe-protocol/src/generated");
@@ -95,6 +110,139 @@ pub fn run(version: Option<&str>) -> Result<()> {
         "generated data for {} (protocol {})",
         input.name, input.protocol_version
     );
+    Ok(())
+}
+
+/// Data-driven registries the client is sent during configuration.
+///
+/// This is `RegistryDataLoader.SYNCHRONIZED_REGISTRIES` of the 26.3 server jar (read with
+/// `javap -c -p`; the data generator reports do not include it). Re-read it when the
+/// version changes: a registry missing here makes the client fail with "Missing element".
+const SYNCED: &[&str] = &[
+    "banner_pattern",
+    "block_transformer",
+    "cat_sound_variant",
+    "cat_variant",
+    "chat_type",
+    "chicken_sound_variant",
+    "chicken_variant",
+    "cow_sound_variant",
+    "cow_variant",
+    "damage_type",
+    "decorated_pot_pattern",
+    "dialog",
+    "dimension_type",
+    "enchantment",
+    "frog_variant",
+    "instrument",
+    "jukebox_song",
+    "painting_variant",
+    "pig_sound_variant",
+    "pig_variant",
+    "sulfur_cube_archetype",
+    "test_environment",
+    "test_instance",
+    "timeline",
+    "trim_material",
+    "trim_pattern",
+    "wolf_sound_variant",
+    "wolf_variant",
+    "world_clock",
+    "worldgen/biome",
+    "worldgen/block_state_provider",
+    "zombie_nautilus_variant",
+];
+
+/// Entry names of the [`SYNCED`] registries, read from the `--server` output.
+///
+/// Each must be data-driven per `datapack.json`, so a renamed registry fails loudly.
+fn datapack_registries(server_out: &Path, datapack: &Value) -> Result<Vec<(String, Vec<String>)>> {
+    let mut registries = Vec::new();
+    for name in SYNCED {
+        let id = format!("minecraft:{name}");
+        if datapack["registries"][&id]["elements"] != true {
+            return Err(format!("{id} is not a data-driven registry in datapack.json").into());
+        }
+        let root = server_out.join("data/minecraft").join(name);
+        let mut entries = Vec::new();
+        collect_json(&root, &root, &mut entries)?;
+        entries.sort();
+        if entries.is_empty() {
+            return Err(format!("{id} has no entries in the generated data").into());
+        }
+        registries.push((
+            id,
+            entries
+                .into_iter()
+                .map(|e| format!("minecraft:{e}"))
+                .collect(),
+        ));
+    }
+    Ok(registries)
+}
+
+/// Reads `data/minecraft/tags/<registry>/**.json` for every static registry and every
+/// [`SYNCED`] one. Registries the client is never sent tags for (such as `villager_trade`)
+/// are not read.
+fn read_tags(
+    server_out: &Path,
+    registries: &Value,
+) -> Result<std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>>> {
+    let static_names = registries
+        .as_object()
+        .ok_or("registries.json is not an object")?
+        .keys()
+        .filter_map(|k| k.strip_prefix("minecraft:"));
+    let mut out = std::collections::BTreeMap::new();
+    for registry in static_names.chain(SYNCED.iter().copied()) {
+        let root = server_out.join("data/minecraft/tags").join(registry);
+        if !root.is_dir() {
+            continue;
+        }
+        let mut files = Vec::new();
+        collect_json(&root, &root, &mut files)?;
+        let mut tags = std::collections::BTreeMap::new();
+        for name in files {
+            let json: Value =
+                serde_json::from_slice(&fs::read(root.join(format!("{name}.json")))?)?;
+            if json["replace"] == true {
+                return Err(
+                    format!("tag {registry}/{name} uses replace, which is not supported").into(),
+                );
+            }
+            let values = json["values"]
+                .as_array()
+                .ok_or_else(|| format!("tag {registry}/{name} has no values"))?
+                .iter()
+                .map(|v| match v {
+                    Value::String(s) => Ok(s.clone()),
+                    // {"id": .., "required": ..}: optional entries are not used in vanilla's own tags
+                    Value::Object(o) if o.get("required") != Some(&Value::Bool(false)) => o
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .ok_or_else(|| format!("tag {registry}/{name} has an entry without id")),
+                    _ => Err(format!("tag {registry}/{name} has an unsupported entry")),
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            tags.insert(name, values);
+        }
+        out.insert(registry.to_owned(), tags);
+    }
+    Ok(out)
+}
+
+/// Pushes every `*.json` under `dir` as a path relative to `root`, without the extension.
+fn collect_json(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<()> {
+    for entry in fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_json(root, &path, out)?;
+        } else if path.extension().is_some_and(|e| e == "json") {
+            let rel = path.strip_prefix(root)?.with_extension("");
+            out.push(rel.to_string_lossy().replace('\\', "/"));
+        }
+    }
     Ok(())
 }
 
