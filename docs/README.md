@@ -19,6 +19,7 @@ Minestom と同じく vanilla の挙動を持たず、利用者が自分のサ�
 
 - ツールとタスクは mise（`mise.toml`）。`mise run check` が検証の正で、CI も同じタスクを回す。
 - `mise run` で一覧、`mise run fmt:fix` で整形。
+- プロトコルのデータ（ブロック状態・パケット ID 等）は `mise run datagen [version]` で再生成する。Java 25 と `curl`・`unzip` を使い、生成物は commit する。
 
 ## 規約
 

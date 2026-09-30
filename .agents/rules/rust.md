@@ -40,7 +40,7 @@ paths:
 
 ## データと依存
 
-- `src/generated/` は手で編集しない。`cargo xtask datagen` で再生成する（D4, D5）
+- `src/generated/` は手で編集しない。`mise run datagen` で再生成する（D4, D5）。生成器は全ブロック状態で混合基数の規則を検証するので、その検証を緩めて通さない（D24）
 - Mojang の生成元データ（server.jar、生成 JSON）を commit しない（D17）
 - 新しい依存を足すときは、標準ライブラリと既存依存で足りないことを PR に書く
 - `unsafe` は禁止（workspace lint で `forbid`）。必要になったら理由付きでこのルールを更新する
