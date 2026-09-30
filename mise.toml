@@ -1,0 +1,34 @@
+# Tool and task management for lodeframe.
+#
+# `mise run check` is the canonical verification entry point; CI runs the same
+# tasks. The MSRV build (`rust-version` in Cargo.toml) is checked separately in CI.
+
+[tools]
+rust = { version = "1.95", components = "rustfmt,clippy", profile = "minimal" }
+
+[tasks.fmt]
+description = "Check formatting"
+run = "cargo fmt --all -- --check"
+
+[tasks."fmt:fix"]
+description = "Apply formatting"
+run = "cargo fmt --all"
+
+[tasks.clippy]
+description = "Clippy with warnings denied"
+run = "cargo clippy --workspace --all-targets -- -D warnings"
+
+[tasks.test]
+description = "Workspace test suite"
+run = "cargo test --workspace"
+
+[tasks.check]
+description = "Full verification (fmt + clippy + test)"
+depends = ["fmt", "clippy", "test"]
+
+[tasks.msrv]
+description = "Build the workspace on the MSRV declared in Cargo.toml"
+run = '''
+v=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)
+mise exec "rust@$v" -- cargo build --workspace
+'''
