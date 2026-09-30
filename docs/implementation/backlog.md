@@ -21,7 +21,7 @@
 |---|---|---|---|---|
 | ✅ | M1-01 | workspace 骨格と CI | — | #1 |
 | ✅ | M1-02 | 基本型と Encode / Decode trait | M1-01 | #3 |
-| ✅ | M1-20 | 座標・ベクトル型 | M1-02 | (未 PR) |
+| ✅ | M1-20 | 座標・ベクトル型 | M1-02 | #5 |
 | ✅ | M1-03 | `derive(Encode, Decode)` と `derive(Packet)` | M1-02 | #4 |
 | 🟡 | M1-04 | NBT と最小 Component | M1-02 | |
 | 🟡 | M1-05 | `xtask datagen` | M1-01 | |
