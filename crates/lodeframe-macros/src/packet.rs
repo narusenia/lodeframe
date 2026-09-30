@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{DeriveInput, Ident, LitInt, parse_quote};
+use syn::{DeriveInput, Expr, Ident, parse_quote};
 
 use crate::crate_path;
 
@@ -14,7 +14,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     for attr in input.attrs.iter().filter(|a| a.path().is_ident("packet")) {
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("id") {
-                id = Some(meta.value()?.parse::<LitInt>()?);
+                id = Some(meta.value()?.parse::<Expr>()?);
             } else if meta.path.is_ident("state") {
                 state = Some(one_of(meta.value()?.parse()?, STATES)?);
             } else if meta.path.is_ident("side") {
