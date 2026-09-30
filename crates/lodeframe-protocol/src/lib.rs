@@ -9,6 +9,7 @@ mod varint;
 
 pub use codec::{Decode, Encode, take};
 pub use error::{Error, Result};
+pub use lodeframe_macros::{Decode, Encode, Packet};
 pub use packet::{Packet, Side, State};
 pub use string::Identifier;
 pub use types::{BitSet, Position, Uuid};

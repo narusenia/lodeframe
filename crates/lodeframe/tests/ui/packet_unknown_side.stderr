@@ -1,0 +1,5 @@
+error: expected one of: Clientbound, Serverbound
+ --> tests/ui/packet_unknown_side.rs:4:39
+  |
+4 | #[packet(id = 1, state = Play, side = Both)]
+  |                                       ^^^^
