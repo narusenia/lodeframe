@@ -1,1 +1,6 @@
 /target
+
+# Vanilla server bundler output (never commit; see D17)
+/libraries
+/logs
+/versions

@@ -52,6 +52,8 @@ pub fn run(version: Option<&str>) -> Result<()> {
         .arg(&jar)
         .args(["--reports", "--output"])
         .arg(&out)
+        // The bundler unpacks `libraries/`, `versions/` and `logs/` into the working directory.
+        .current_dir(&dir)
         .status()
         .map_err(|e| {
             format!("could not run `java` ({e}); run `mise install` to get Java {java_major}")
