@@ -14,7 +14,7 @@ use tokio::{
 use crate::{
     instance::{InstanceHandle, Message, OUTBOX},
     login::Profile,
-    net::Connection,
+    net::{Connection, is_disconnect},
     protocol::{Error, Result, State, ids, packets::play::KeepAlive, split_packet_id},
 };
 
@@ -48,7 +48,9 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
         .await;
     span.in_scope(|| match &result {
         Ok(()) => tracing::info!("left"),
-        Err(e) => tracing::info!(error = %e, "left"),
+        // the client just going away is the normal way to leave
+        Err(e) if is_disconnect(e) => tracing::info!("left"),
+        Err(e) => tracing::warn!(error = %e, "left after an error"),
     });
     // the instance may already be gone; there is nobody left to tell
     let _ = instance.send(Message::Leave { player }).await;

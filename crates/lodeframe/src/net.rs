@@ -132,7 +132,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
 }
 
 /// Whether `e` is just the peer going away rather than something wrong.
-fn is_disconnect(e: &Error) -> bool {
+pub(crate) fn is_disconnect(e: &Error) -> bool {
     use io::ErrorKind::{BrokenPipe, ConnectionAborted, ConnectionReset, TimedOut, UnexpectedEof};
     matches!(e, Error::Io(e) if matches!(e.kind(), UnexpectedEof | ConnectionReset | ConnectionAborted | BrokenPipe | TimedOut))
 }
