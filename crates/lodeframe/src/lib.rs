@@ -3,6 +3,7 @@
 //!
 //! This crate is the facade: it re-exports the other lodeframe crates.
 
+pub mod chunk;
 pub mod clock;
 pub mod configuration;
 pub mod instance;
