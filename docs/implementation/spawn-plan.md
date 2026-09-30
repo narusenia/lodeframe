@@ -1,6 +1,6 @@
 # スポーンと移動 実装計画（M1-11）
 
-> **Status**: 実装済み（実機確認待ち）— 2026-09-30。実装は `lodeframe::world::World`、実機確認は `cargo run -p lodeframe --example offline_login`
+> **Status**: 実装済み・実機確認済み（vanilla 26.3 で入室と移動）— 2026-09-30。実装は `lodeframe::world::World`、実機確認は `cargo run -p lodeframe --example offline_login`
 
 要件: REQ-WORLD-001・REQ-WORLD-002・REQ-NET-002。決定: D6・D16（[decisions.md](../decisions.md)）。
 protocol（パケット型）と本体（スポーン・移動・チャンク追従）にまたがるため、ここに設計を置く。
@@ -37,7 +37,7 @@ protocol（パケット型）と本体（スポーン・移動・チャンク追
 - 移動の検証（速度・衝突）。クライアントの申告をそのまま信じる
 - `ChunkBatchReceived` の速度でのチャンク送信の絞り込み
 
-## 実機で確かめる
+## 実機で確かめた
 
 - チャンクの形式（[chunk-plan.md](chunk-plan.md) の「実機で確かめる」）
 - `Login` の並びと `ForgetLevelChunk` の long のパック順

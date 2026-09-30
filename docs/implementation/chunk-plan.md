@@ -1,6 +1,6 @@
 # チャンクと ChunkLoader 実装計画（M1-10）
 
-> **Status**: 実装済み（実機確認は M1-11）— 2026-09-30
+> **Status**: 実装済み・実機確認済み（vanilla 26.3 が表示・移動できる）— 2026-09-30
 
 要件: REQ-WORLD-002。決定: D6・D16（[decisions.md](../decisions.md)）。
 protocol（チャンクのワイヤ形式）と本体（`ChunkLoader`・送受信管理）にまたがり、利用者が実装する trait を決めるためここに設計を置く。
@@ -21,8 +21,11 @@ protocol（チャンクのワイヤ形式）と本体（`ChunkLoader`・送受�
 - パレットは 3 種。単一値は bits=0 + 値の VarInt、間接は bits + 長さ + 値の VarInt 列、直接は bits のみ。いずれも後ろに生の `long[]`（長さ接頭辞なし、1 long に値は跨がない）
 - 高さマップの種別は enum の ordinal（WORLD_SURFACE=1、MOTION_BLOCKING=4、MOTION_BLOCKING_NO_LEAVES=5 がクライアント向け）。配列は VarInt の長さ付き
 - ライトは BitSet 4 つ + `byte[2048]` のリスト 2 つ。マスクはセクション数 + 2 ビット
+- **BitSet は Java の `BitSet.toByteArray()`**（VarInt バイト長 + リトルエンディアン、末尾ゼロ省略）。u64 配列ではない。実機で decode エラーになり、server.jar の codec で直接 decode して特定した
 
-## 実機で確かめる（M1-11）
+## 実機で確かめた（M1-11、平坦ワールドで表示・移動を確認）
+
+以下は見た目で問題が出ていないだけで、厳密には未検証。壊れて見えたらここから疑う。
 
 - 間接パレットの幅のしきい値（ブロック 4〜8 bits、バイオーム 1〜3 bits）。`Strategy` の定数から読んだが、どの bits でどの palette を使うかの対応表は bytecode から直接は追えていない
 - MOTION_BLOCKING を「空気以外の全ブロック」で近似している（草や葉は不正確）
