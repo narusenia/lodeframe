@@ -47,7 +47,10 @@ impl Style {
 impl Component {
     /// Plain text that inherits its style.
     pub fn text(text: impl Into<String>) -> Self {
-        Self { text: text.into(), style: Style::default() }
+        Self {
+            text: text.into(),
+            style: Style::default(),
+        }
     }
 
     /// Sets the colour.
@@ -176,7 +179,10 @@ mod tests {
         let c = Component::text("hi").color(Color::Gold).bold().underlined();
         assert_eq!(c.style.color, Some(Color::Gold));
         assert_eq!((c.style.bold, c.style.underlined), (Some(true), Some(true)));
-        assert_eq!((c.style.italic, c.style.strikethrough, c.style.obfuscated), (None, None, None));
+        assert_eq!(
+            (c.style.italic, c.style.strikethrough, c.style.obfuscated),
+            (None, None, None)
+        );
         assert!(!c.style.is_empty());
         assert_eq!(Component::from("hi"), plain);
     }
