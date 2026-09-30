@@ -55,7 +55,7 @@ vanilla 挙動（mob AI、レッドストーン、ワールド生成、クラフ
 
 ### REQ-PROTO-001: プロトコル基本型と Encode / Decode
 
-- VarInt / VarLong / String / UUID / Position / BitSet / Identifier / 固定長配列 / Option / 長さ前置 Vec を `Encode` / `Decode` trait で扱う。
+- VarInt / VarLong / String / UUID / BlockPos / BitSet / Identifier / 固定長配列 / Option / 長さ前置 Vec を `Encode` / `Decode` trait で扱う。
 - `lodeframe-protocol` は本体に依存しない（ボット・proxy で単独利用可）。
 - **受入条件**
   - [ ] 全基本型の round-trip テストが通る
