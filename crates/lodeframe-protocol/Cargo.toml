@@ -13,4 +13,5 @@ workspace = true
 [dependencies]
 lodeframe-text.workspace = true
 lodeframe-macros.workspace = true
+flate2.workspace = true
 glam.workspace = true
