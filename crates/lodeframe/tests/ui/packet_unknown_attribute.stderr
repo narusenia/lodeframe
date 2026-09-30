@@ -1,0 +1,5 @@
+error: unknown packet attribute, expected `id`, `state` or `side`
+ --> tests/ui/packet_unknown_attribute.rs:4:52
+  |
+4 | #[packet(id = 1, state = Play, side = Clientbound, name = "x")]
+  |                                                    ^^^^

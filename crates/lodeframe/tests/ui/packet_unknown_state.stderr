@@ -1,0 +1,5 @@
+error: expected one of: Handshake, Status, Login, Configuration, Play
+ --> tests/ui/packet_unknown_state.rs:4:26
+  |
+4 | #[packet(id = 1, state = Lobby, side = Clientbound)]
+  |                          ^^^^^

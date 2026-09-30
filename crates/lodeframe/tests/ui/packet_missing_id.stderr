@@ -1,0 +1,5 @@
+error: missing `id`: write #[packet(id = 0x00, state = Play, side = Clientbound)]
+ --> tests/ui/packet_missing_id.rs:5:8
+  |
+5 | struct P;
+  |        ^
