@@ -1,0 +1,5 @@
+error: an enum tag must be an integer literal that fits in i32
+ --> tests/ui/enum_tag_not_literal.rs:5:9
+  |
+5 |     A = 1 + 1,
+  |         ^
