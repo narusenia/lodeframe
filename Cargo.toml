@@ -14,6 +14,7 @@ lodeframe-text = { path = "crates/lodeframe-text", version = "0.0.0" }
 lodeframe-protocol = { path = "crates/lodeframe-protocol", version = "0.0.0" }
 lodeframe-macros = { path = "crates/lodeframe-macros", version = "0.0.0" }
 
+glam = "0.33"
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", default-features = false, features = ["derive", "parsing", "printing", "proc-macro", "clone-impls"] }
