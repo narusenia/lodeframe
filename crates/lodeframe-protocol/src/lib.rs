@@ -2,6 +2,7 @@
 //! Minecraft protocol types, packets and generated data. Independent of the server.
 
 pub mod block;
+pub mod chunk;
 mod codec;
 mod component;
 mod coord;
