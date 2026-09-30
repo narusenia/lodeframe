@@ -14,8 +14,10 @@ workspace = true
 lodeframe-text.workspace = true
 lodeframe-protocol.workspace = true
 lodeframe-macros.workspace = true
-tokio = { workspace = true, features = ["net", "io-util", "time", "rt"] }
+tokio = { workspace = true, features = ["net", "io-util", "time", "rt", "sync", "macros"] }
+tracing.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tracing-subscriber.workspace = true
 trybuild.workspace = true
