@@ -6,6 +6,7 @@
 pub mod chunk;
 pub mod clock;
 pub mod configuration;
+pub mod event;
 pub mod instance;
 pub mod login;
 pub mod net;
