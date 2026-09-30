@@ -65,9 +65,9 @@ vanilla 挙動（mob AI、レッドストーン、ワールド生成、クラフ
 
 - server.jar の data generator 出力からブロック状態・レジストリ・パケット ID を Rust コードに生成する（D4, D5）。
 - **受入条件**
-  - [ ] `cargo xtask datagen <version>` 1 コマンドで再生成できる
-  - [ ] 生成物は commit され、通常ビルドはネットワーク不要
-  - [ ] ブロック状態 ID ⇔ (ブロック, プロパティ) の相互変換ができる
+  - [x] `mise run datagen [version]` 1 コマンドで再生成でき、再実行で差分が出ない
+  - [x] 生成物は commit され、通常ビルドはネットワーク・Java 不要
+  - [x] ブロック状態 ID ⇔ (ブロック, プロパティ) の相互変換ができる（全 35,723 状態をテスト）
 
 ### REQ-PROTO-003: NBT
 

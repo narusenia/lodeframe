@@ -14,6 +14,12 @@ run = "cargo fmt --all -- --check"
 description = "Apply formatting"
 run = "cargo fmt --all"
 
+[tasks.datagen]
+description = "Regenerate protocol data from the vanilla data generator (usage: mise run datagen [version])"
+# Java is scoped to this task so that CI and normal builds never install it.
+tools = { java = "25" }
+run = "cargo xtask datagen"
+
 [tasks."lint:license"]
 description = "Every .rs file starts with the SPDX header (trybuild fixtures excepted)"
 run = '''

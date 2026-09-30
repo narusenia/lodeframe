@@ -16,6 +16,8 @@ lodeframe-macros = { path = "crates/lodeframe-macros", version = "0.0.0" }
 
 glam = "0.33"
 proc-macro2 = "1"
+serde_json = "1"
+sha1 = "0.10"
 quote = "1"
 syn = { version = "2", default-features = false, features = ["derive", "parsing", "printing", "proc-macro", "clone-impls"] }
 trybuild = "1"
