@@ -18,6 +18,7 @@ Rust で組み立てる。
 - **最新プロトコルのみ**: 最新の Minecraft リリースに追従する。古いクライアントは ViaProxy を前段に置く
 - **ロック不要のゲーム状態**: 各 `Instance`（ワールド）を 1 スレッドが所有し、20 TPS で tick する。通信は tokio
 - **素直なイベント API**: 階層イベントツリーへの型付きハンドラ登録（例: `node.on::<PlayerChat>(|ev, ctx| ..)`）
+- **Adventure 相当のテキスト層**: リッチな Component、MiniMessage パーサ、メッセージ・Title・ActionBar・Sound・BossBar を送る Audience
 - **マクロによる開発体験**: `derive(Encode, Decode)`、`#[command]`、`derive(Event)`、テキスト・アイテム・GUI の宣言的マクロ
 - **軽さを計測で示す**: メモリ・起動時間・ボット負荷のベンチマークを Minestom と比較する
 
@@ -31,8 +32,8 @@ AI・pathfinding・戦闘は、必要なら後から別の util crate で提供�
 | マイルストーン | 範囲 |
 |---|---|
 | v0.1 | ログイン、平坦ワールド、移動、プレイヤー表示、チャット、ブロック設置・破壊 |
-| v0.2 | Velocity modern forwarding、コマンド、エンティティと簡易物理、インベントリ、非同期タスク |
-| v0.3 | online mode、Anvil 読込、ライティング、複数 Instance、スコアボード、UI マクロ |
+| v0.2 | Velocity modern forwarding、コマンド、エンティティと簡易物理、インベントリ、非同期タスク、Component / MiniMessage / Audience |
+| v0.3 | online mode、Anvil 読込、ライティング、複数 Instance、スコアボード、アイテム・GUI マクロ |
 | v0.4 | 性能目標の達成、crates.io 公開 |
 
 詳細は [`docs/`](docs/README.md)。

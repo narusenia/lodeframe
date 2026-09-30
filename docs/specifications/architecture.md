@@ -8,10 +8,11 @@ API の具体形は実装で確定させ、確定したらここを直す。
 ```
 lodeframe/
 ├── crates/
+│   ├── lodeframe-text/       # Component・MiniMessage パーサ。protocol と macros が依存
 │   ├── lodeframe-protocol/   # 基本型・Encode/Decode・NBT・パケット・生成データ。本体非依存
 │   │   └── src/generated/    # xtask datagen の出力（commit する）
-│   ├── lodeframe-macros/     # proc-macro（Encode/Decode, Packet, command, event, UI）
-│   └── lodeframe/            # 本体。protocol と macros を re-export する facade
+│   ├── lodeframe-macros/     # proc-macro（Encode/Decode, Packet, command, event, text!, UI）
+│   └── lodeframe/            # 本体。Audience を持ち、text / protocol / macros を re-export する facade
 ├── xtask/                    # datagen / bot / bench
 └── examples/lobby/
 ```

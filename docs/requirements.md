@@ -7,6 +7,7 @@
 
 vanilla 挙動（mob AI、レッドストーン、ワールド生成、クラフト、戦闘計算）、
 複数プロトコル版の同時対応、Anvil への保存。AI 等は将来 util crate で扱う（D13）。
+サーバー側翻訳（GlobalTranslator 相当）は後回し（D19）。
 
 ## 一覧
 
@@ -14,7 +15,7 @@ vanilla 挙動（mob AI、レッドストーン、ワールド生成、クラフ
 |---|---|---|---|
 | REQ-PROTO-001 | プロトコル基本型と Encode / Decode | Must | v0.1 |
 | REQ-PROTO-002 | vanilla 生成データからの codegen | Must | v0.1 |
-| REQ-PROTO-003 | NBT とテキストコンポーネント | Must | v0.1 |
+| REQ-PROTO-003 | NBT | Must | v0.1 |
 | REQ-NET-001 | 接続層（フレーミング・圧縮・状態遷移） | Must | v0.1 |
 | REQ-NET-002 | Status ping | Must | v0.1 |
 | REQ-NET-003 | offline login と configuration | Must | v0.1 |
@@ -28,7 +29,10 @@ vanilla 挙動（mob AI、レッドストーン、ワールド生成、クラフ
 | REQ-ENT-001 | プレイヤーの表示・移動同期 | Must | v0.1 |
 | REQ-ENT-002 | エンティティと簡易物理 | Must | v0.2 |
 | REQ-ENT-003 | インベントリ | Must | v0.2 |
-| REQ-ENT-004 | スコアボード・ボスバー | Should | v0.3 |
+| REQ-ENT-004 | スコアボード | Should | v0.3 |
+| REQ-TEXT-001 | Component モデル | Must | v0.1 / v0.2 |
+| REQ-TEXT-002 | MiniMessage 実行時パーサ | Must | v0.2 |
+| REQ-TEXT-003 | Audience | Must | v0.2 |
 | REQ-API-001 | 階層イベントノード | Must | v0.1 |
 | REQ-API-002 | チャット・ブロック操作イベント | Must | v0.1 |
 | REQ-API-003 | 非同期処理の spawn→戻し | Must | v0.2 |
@@ -36,7 +40,8 @@ vanilla 挙動（mob AI、レッドストーン、ワールド生成、クラフ
 | REQ-MACRO-001 | `derive(Encode, Decode)` | Must | v0.1 |
 | REQ-MACRO-002 | `#[command]` | Must | v0.2 |
 | REQ-MACRO-003 | `#[event]` / `derive(Event)` | Should | v0.2 |
-| REQ-MACRO-004 | 宣言的 UI マクロ | Could | v0.3 |
+| REQ-MACRO-004 | アイテム・GUI の宣言的マクロ | Could | v0.3 |
+| REQ-MACRO-005 | `text!` | Should | v0.2 |
 | REQ-PERF-001 | 性能目標 | Must | v0.4 |
 | REQ-INFRA-001 | CI | Must | v0.1 |
 | REQ-INFRA-002 | 自前ボットによる統合・負荷試験 | Must | v0.1 |
@@ -62,12 +67,11 @@ vanilla 挙動（mob AI、レッドストーン、ワールド生成、クラフ
   - [ ] 生成物は commit され、通常ビルドはネットワーク不要
   - [ ] ブロック状態 ID ⇔ (ブロック, プロパティ) の相互変換ができる
 
-### REQ-PROTO-003: NBT とテキストコンポーネント
+### REQ-PROTO-003: NBT
 
-- ネットワーク NBT（名前なしルート）の読み書き。テキストコンポーネントは NBT 形式で送れる最小実装。
+- ネットワーク NBT（名前なしルート）の読み書き。
 - **受入条件**
   - [ ] vanilla のレジストリデータを NBT で送ってクライアントが受理する
-  - [ ] 色・装飾付きテキストをチャットに表示できる
 
 ## NET
 
@@ -161,10 +165,37 @@ vanilla 挙動（mob AI、レッドストーン、ワールド生成、クラフ
 - **受入条件**
   - [ ] プレイヤーインベントリとチェスト型 GUI を開閉・操作でき、クリックがイベントになる
 
-### REQ-ENT-004: スコアボード・ボスバー
+### REQ-ENT-004: スコアボード
 
 - **受入条件**
-  - [ ] サイドバー・チーム・ボスバーを利用者コードから表示・更新できる
+  - [ ] サイドバー・チームを利用者コードから表示・更新できる
+
+## TEXT
+
+Adventure 相当の層（D19）。Component と MiniMessage は `lodeframe-text`、Audience は本体（D20）。
+
+### REQ-TEXT-001: Component モデル
+
+- v0.1: text / color / decoration のみ。v0.2: style（font・shadow 含む）、hover / click イベント、translatable / score / selector / keybind、子要素。builder API。NBT と JSON の両方でシリアライズ。
+- **受入条件**
+  - [ ] v0.1: 色・装飾付きテキストをチャットに表示できる
+  - [ ] v0.2: 全種の Component が vanilla クライアントで正しく表示される
+  - [ ] NBT / JSON の round-trip が一致する
+
+### REQ-TEXT-002: MiniMessage 実行時パーサ
+
+- `<red>`、`<bold>`、`<gradient>`、`<rainbow>`、`<hover>`、`<click>`、`<reset>`、placeholder（名前付き引数）。Component → MiniMessage 文字列の逆変換。
+- **受入条件**
+  - [ ] Adventure の MiniMessage と同じ入力で同じ見た目になる（主要タグ）
+  - [ ] 不正な入力はパニックせず、エラー位置付きで返すか平文として扱う（選択可能）
+  - [ ] placeholder に利用者入力を渡してもタグとして解釈されない
+
+### REQ-TEXT-003: Audience
+
+- Player・Instance・任意のグループが共通 trait を実装する: メッセージ、Title（時間指定）、ActionBar、Sound（位置・カテゴリ）、BossBar の表示・更新・非表示。
+- **受入条件**
+  - [ ] 同じコードで 1 人・Instance 全員・任意のグループに送れる
+  - [ ] BossBar の進捗・色・タイトル変更が表示中のクライアントに反映される
 
 ## API
 
@@ -216,11 +247,18 @@ vanilla 挙動（mob AI、レッドストーン、ワールド生成、クラフ
 - **受入条件**
   - [ ] 独自イベントを derive 1 行で定義し、イベントノードに流せる
 
-### REQ-MACRO-004: 宣言的 UI マクロ
+### REQ-MACRO-004: アイテム・GUI の宣言的マクロ
 
-- `text!("<red>Hello {name}")`、アイテム定義、インベントリ GUI 定義。
+- アイテム定義、インベントリ GUI 定義。
 - **受入条件**
   - [ ] 書式の誤りがコンパイルエラーになる
+
+### REQ-MACRO-005: `text!`
+
+- `text!("<red>Hello {name}")`。REQ-TEXT-002 と同じパーサをコンパイル時に使う。`{name}` はスコープ内の変数を placeholder として埋め込む。
+- **受入条件**
+  - [ ] タグの誤りがリテラル内の位置を指すコンパイルエラーになる
+  - [ ] 実行時パーサと同じ Component を生成する
 
 ## PERF
 
