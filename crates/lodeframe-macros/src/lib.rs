@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Procedural macros: `Encode`/`Decode`, `Packet`, and later `#[command]`, `Event`, `text!`.
 //!
 //! The derives emit paths to `::lodeframe::protocol` by default. Inside the protocol

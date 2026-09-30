@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //! The derives must produce the same bytes as hand-written impls, through the facade path.
 
 use lodeframe::protocol::{Decode, Encode, Error, Packet, Side, State, VarInt};
