@@ -21,6 +21,7 @@
 |---|---|---|---|---|
 | ✅ | M1-01 | workspace 骨格と CI | — | #1 |
 | ✅ | M1-02 | 基本型と Encode / Decode trait | M1-01 | #3 |
+| 🟡 | M1-20 | 座標・ベクトル型 | M1-02 | |
 | ✅ | M1-03 | `derive(Encode, Decode)` と `derive(Packet)` | M1-02 | (未 PR) |
 | 🟡 | M1-04 | NBT と最小 Component | M1-02 | |
 | 🟡 | M1-05 | `xtask datagen` | M1-01 | |
@@ -28,8 +29,8 @@
 | ⬜ | M1-07 | Status ping | M1-06 | |
 | ⬜ | M1-08 | offline login と configuration | M1-04, M1-06 | |
 | ⬜ | M1-09 | Instance と tick ループ | M1-06 | |
-| ⬜ | M1-10 | チャンクと `ChunkLoader` | M1-05, M1-09 | |
-| ⬜ | M1-11 | スポーンと移動 | M1-08, M1-10 | |
+| ⬜ | M1-10 | チャンクと `ChunkLoader` | M1-05, M1-09, M1-20 | |
+| ⬜ | M1-11 | スポーンと移動 | M1-08, M1-10, M1-20 | |
 | ⬜ | M1-12 | 階層イベントノード | M1-09 | |
 | ⬜ | M1-19 | テストハーネス（`test-util`） | M1-11, M1-12 | |
 | ⬜ | M1-13 | プレイヤー表示・移動同期 | M1-11, M1-19 | |
