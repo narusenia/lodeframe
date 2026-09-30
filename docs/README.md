@@ -15,6 +15,11 @@ Minestom と同じく vanilla の挙動を持たず、利用者が自分のサ�
 | 今どの単位に着手できるか | [implementation/backlog.md](implementation/backlog.md) |
 | マイルストーンごとの実装計画 | [implementation/](implementation/) の `*-plan.md` |
 
+## 開発
+
+- ツールとタスクは mise（`mise.toml`）。`mise run check` が検証の正で、CI も同じタスクを回す。
+- `mise run` で一覧、`mise run fmt:fix` で整形。
+
 ## 規約
 
 - 同じ内容を 2 箇所に書かない。実装と食い違うときは**実装が正**で、気づいた文書をその変更で直す。
