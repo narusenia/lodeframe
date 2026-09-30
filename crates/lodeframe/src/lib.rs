@@ -4,6 +4,7 @@
 //! This crate is the facade: it re-exports the other lodeframe crates.
 
 pub mod net;
+pub mod status;
 
 pub use lodeframe_macros as macros;
 pub use lodeframe_protocol as protocol;
