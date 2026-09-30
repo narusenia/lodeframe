@@ -34,7 +34,8 @@ pub fn derive_decode(input: TokenStream) -> TokenStream {
 
 /// Derives `Packet` from `#[packet(id = 0x26, state = Play, side = Clientbound)]`.
 ///
-/// `state` is one of `Handshake`, `Status`, `Login`, `Configuration`, `Play`;
+/// `id` is an integer expression, usually a generated constant such as
+/// `ids::play::clientbound::KEEP_ALIVE`. `state` is one of `Handshake`, `Status`, `Login`, `Configuration`, `Play`;
 /// `side` is `Clientbound` or `Serverbound`. Derive `Encode` / `Decode` separately.
 #[proc_macro_derive(Packet, attributes(lodeframe, packet))]
 pub fn derive_packet(input: TokenStream) -> TokenStream {
