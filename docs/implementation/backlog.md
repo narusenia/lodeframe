@@ -28,7 +28,7 @@
 | ✅ | M1-06 | 接続層 | M1-03, M1-05 | #9 |
 | ✅ | M1-07 | Status ping | M1-06 | #10 |
 | ✅ | M1-08 | offline login と configuration | M1-04, M1-06 | #11 |
-| 🟡 | M1-09 | Instance と tick ループ | M1-06 | |
+| ✅ | M1-09 | Instance と tick ループ | M1-06 | #13 |
 | ⬜ | M1-10 | チャンクと `ChunkLoader` | M1-05, M1-09, M1-20 | |
 | ⬜ | M1-11 | スポーンと移動 | M1-08, M1-10, M1-20 | |
 | ⬜ | M1-12 | 階層イベントノード | M1-09 | |
