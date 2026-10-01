@@ -65,7 +65,7 @@
 | ボットの online mode・暗号化 | M1-16 | REQ-AUTH-001 | 同上 |
 | サーバーの起動 API（統合テストと example で組み立てが重複している） | M1-16 | M1-17 の lobby で設計 | 同上 |
 | 落下したらスポーンへ戻す（位置のイベントとテレポート） | M1-17 | REQ-PLAYER-001・REQ-API-005（v0.2） | [lobby-plan.md](lobby-plan.md) |
-| `Server` の設定（圧縮しきい値、online mode、proxy 転送、複数 Instance、Ctrl-C での停止） | M1-17 | REQ-NET-006・REQ-AUTH-001・REQ-WORLD-005 | 同上 |
+| `Server` の設定（圧縮しきい値、online mode、proxy 転送、複数 Instance、Ctrl-C での停止） | M1-17 | REQ-NET-006・REQ-AUTH-001・REQ-AUTH-002・REQ-WORLD-005 | 同上 |
 | サーバー一覧の在線人数 | M1-17 | REQ-NET-002（v0.2） | 同上 |
 | 入室の拒否（ログイン前の async イベント） | M1-17 | REQ-API-003 | 同上 |
 | lobby の評価で見つかった API の不満（ハンドラの文脈の型・発火中のイベント・Component の子要素・送信者名の整形・1 人を除く送信） | M1-17 | v0.2 | 同上と decisions.md の D29 |

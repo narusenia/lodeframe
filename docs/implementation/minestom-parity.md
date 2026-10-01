@@ -165,7 +165,7 @@
 
 | # | Minestom の機能 | lodeframe | 受け皿 |
 |---|---|---|---|
-| 5.1 | 独自の Player と UUID の差し替え | ⬜ | 利用者データは REQ-API-007（v0.2）、ログイン前の差し替えは REQ-API-003（v0.2）。クラスの継承は不要（Rust では持たせるデータで足りる） |
+| 5.1 | 独自の Player と UUID の差し替え | ⬜ | 利用者データは REQ-API-007（v0.2）、ログイン前の UUID・名前の差し替えは REQ-API-003（v0.2）。クラスの継承は不要（Rust では持たせるデータで足りる） |
 | 5.2 | 接続の流れのイベント（pre-login・configuration・spawn・loaded・disconnect） | 🔶 join / leave のみ | pre-login は REQ-API-003（v0.2）、configuration は REQ-NET-010（v0.3）、loaded は REQ-API-005（v0.2） |
 | 5.3 | ゲームモードと変更イベント（F3+F4 を含む） | 🔶 creative 固定 | REQ-PLAYER-001（v0.2） |
 | 5.4 | 能力（飛行・速度・視野・即時破壊・無敵）と飛行のイベント | ⬜ | REQ-PLAYER-001（v0.2） |

@@ -44,7 +44,7 @@ REQ-AUTH-001, REQ-AUTH-003, REQ-NET-002（在線人数）, REQ-NET-004〜006, RE
 
 完了の目安: Velocity 配下で、コマンド・インベントリ GUI・MiniMessage 装飾・Title / BossBar を使う簡単なミニゲームが examples に書ける。ゲームモードの切り替え、スケジューラによるカウントダウン、アイテムに付けた値による GUI の判別を含む。
 
-proxy 系（BungeeCord・HAProxy・plugin message）は Velocity と同じ login の経路に乗るので一緒に入れる。プレイヤーの状態・スケジューラ・利用者データ（Tag API 相当）は、完了の目安のミニゲームに要る。
+BungeeCord 転送と login 段階の plugin message は Velocity と同じ login の経路に乗り、HAProxy PROXY protocol は handshake より前の接続層で同じ「proxy 配下で動かす」設定に乗るので、一緒に入れる。プレイヤーの状態・スケジューラ・利用者データ（Tag API 相当）は、完了の目安のミニゲームに要る。
 
 ### v0.3 — 単体公開と実ワールド
 

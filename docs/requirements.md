@@ -190,10 +190,11 @@ v0.5 以降と、Minestom の機能との 1 行ずつの対照は [minestom-pari
 
 ### REQ-NET-004: HAProxy PROXY protocol
 
-- v1 / v2 を受け、実クライアントの IP を接続に持たせる。任意か必須かを設定で選ぶ。
+- v1 / v2 を受け、実クライアントの IP を接続に持たせる。任意か必須かを設定で選ぶ。ヘッダは信頼する proxy の送信元（許可リスト）からだけ受け付ける。誰でも IP を偽れるため。
 - **受入条件**
   - [ ] PROXY ヘッダの IP が接続の相手として取れる
   - [ ] 必須の設定で、ヘッダの無い接続を拒否する
+  - [ ] 許可リストに無い送信元からの PROXY ヘッダを、形式が正しくても拒否する
 
 ### REQ-NET-005: plugin message（login・play）
 
@@ -267,10 +268,11 @@ v0.5 以降と、Minestom の機能との 1 行ずつの対照は [minestom-pari
 
 ### REQ-AUTH-003: BungeeCord / BungeeGuard 転送
 
-- legacy forwarding（handshake のアドレス欄）と、BungeeGuard のトークン検証。Velocity と同じ設定の入り口から選ぶ。
+- legacy forwarding（handshake のアドレス欄）と、BungeeGuard のトークン検証。Velocity と同じ設定の入り口から選ぶ。legacy forwarding は署名が無く、直接つながったクライアントが任意の UUID を名乗れるため、BungeeGuard を使わないときは信頼する proxy の送信元（許可リスト）からの接続だけを受け付ける。
 - **受入条件**
   - [ ] BungeeCord 配下で正しい UUID・スキンでログインできる
-  - [ ] BungeeGuard のトークンが合わない接続を拒否する
+  - [ ] BungeeGuard のトークンが無いか合わない接続を拒否する
+  - [ ] BungeeGuard を使わない設定では、許可リストに無い送信元からの接続を拒否する
 
 ## WORLD
 
@@ -584,6 +586,7 @@ Adventure 相当の層（D19）。Component と MiniMessage は `lodeframe-text`
 - **受入条件**
   - [ ] ハンドラから DB 相当の非同期処理を投げても tick が遅延しない
   - [ ] 結果コールバックでプレイヤーが退出済みの場合を扱える
+  - [ ] ログイン前の async イベントで、入室の拒否と UUID・名前の差し替えができる
 
 ### REQ-API-004: コマンド
 
