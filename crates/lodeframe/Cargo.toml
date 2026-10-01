@@ -22,6 +22,8 @@ tokio = { workspace = true, features = ["net", "io-util", "time", "rt", "sync", 
 tracing.workspace = true
 
 [dev-dependencies]
+# bots drive a real server in the integration tests; the bot depends on protocol only
+lodeframe-bot.workspace = true
 # the crate's own tests use the harness
 lodeframe = { path = ".", features = ["test-util"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
