@@ -12,8 +12,9 @@ lodeframe/
 │   ├── lodeframe-protocol/   # 基本型・Encode/Decode・NBT・パケット・生成データ。本体非依存
 │   │   └── src/generated/    # xtask datagen の出力（commit する）
 │   ├── lodeframe-macros/     # proc-macro（Encode/Decode, Packet, command, event, text!, UI）
+│   ├── lodeframe-bot/        # protocol だけで書いた軽量ボット（lib + bin）。統合テストと負荷試験
 │   └── lodeframe/            # 本体。Audience を持ち、text / protocol / macros を re-export する facade
-├── xtask/                    # datagen / bot / bench
+├── xtask/                    # datagen / bot（lodeframe-bot を呼ぶ）/ bench
 └── examples/lobby/
 ```
 
