@@ -18,7 +18,7 @@ use lodeframe::{
     server::{RunningServer, Server},
     world::World,
 };
-use lodeframe_bot::{Bot, ChatLine, Frame};
+use lodeframe_bot::{Bot, ChatLine, Frame, spread_position};
 
 /// How long a bot waits for one packet. Generous: this only bounds a failing test.
 const WAIT: Duration = Duration::from_secs(10);
@@ -196,6 +196,49 @@ async fn bots_that_wander_are_kept_for_the_whole_run() {
         // at least the join, and the others' walking
         assert!(received > 10, "only {received} packets");
     }
+
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bot_out_of_sight_is_removed_and_its_moves_do_not_arrive_but_its_chat_does() {
+    let server = start().await;
+    let mut alice = Bot::connect(server.addr(), "Alice").await.unwrap();
+    let mut bob = Bot::connect(server.addr(), "Bob").await.unwrap();
+    let bob_id = bob.entity_id();
+    alice.recv_until(WAIT, entity_added(bob_id)).await.unwrap();
+
+    // four chunks away, with a view distance of 2: out of sight
+    let far = spread_position(1, 4);
+    bob.move_to(far).await.unwrap();
+    alice
+        .recv_until(WAIT, |f| {
+            let gone = f
+                .decode::<RemoveEntities>()
+                .ok()
+                .filter(|_| f.is::<RemoveEntities>())?;
+            gone.entity_ids.iter().any(|e| e.0 == bob_id).then_some(())
+        })
+        .await
+        .unwrap();
+
+    // what Bob does there does not reach Alice, but what he says does
+    bob.move_to(far + Vec3::new(1.0, 0.0, 0.0)).await.unwrap();
+    bob.chat("can you hear me").await.unwrap();
+    let heard = alice
+        .recv_until(WAIT, |f| {
+            assert!(
+                !f.is::<EntityPositionSync>(),
+                "a move arrived from out of sight"
+            );
+            f.chat_line()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        (heard.name.as_str(), heard.text.as_str()),
+        ("Bob", "can you hear me")
+    );
 
     server.stop();
 }
