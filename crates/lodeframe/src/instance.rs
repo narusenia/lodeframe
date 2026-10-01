@@ -59,10 +59,15 @@ pub enum Message {
         /// Packet id followed by the payload.
         body: Vec<u8>,
     },
-    /// The player's connection ended.
+    /// A connection of the player ended.
     Leave {
         /// Who left.
         player: Uuid,
+        /// The channel of the connection that ended, as a weak reference so that holding it does
+        /// not keep the connection open. A player can log in again while the old connection is
+        /// still going, and the end of the old one must not remove the new one:
+        /// [`Sessions::is_current`] tells which it was.
+        outbound: mpsc::WeakSender<Packets>,
     },
 }
 
@@ -79,6 +84,15 @@ impl Sessions {
     /// Registers a player.
     pub fn join(&mut self, player: Uuid, outbound: mpsc::Sender<Packets>) {
         self.outbound.insert(player, outbound);
+    }
+
+    /// Whether `connection`, from a [`Message::Leave`], is the one `player` is on now. It is not
+    /// if the player logged in again since, or if the player was already dropped.
+    pub fn is_current(&self, player: Uuid, connection: &mpsc::WeakSender<Packets>) -> bool {
+        match (self.outbound.get(&player), connection.upgrade()) {
+            (Some(current), Some(ended)) => current.same_channel(&ended),
+            _ => false,
+        }
     }
 
     /// Forgets a player, closing their channel.

@@ -768,6 +768,15 @@ pub mod play {
         pub target_name: Option<Component>,
     }
 
+    /// Ends the connection, showing the player `reason`.
+    #[derive(Debug, Clone, PartialEq, Encode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::DISCONNECT, state = Play, side = Clientbound)]
+    pub struct Disconnect {
+        /// What the player is told.
+        pub reason: Component,
+    }
+
     /// A message from the server rather than a player.
     #[derive(Debug, Clone, PartialEq, Encode, Packet)]
     #[lodeframe(crate = crate)]
@@ -1254,5 +1263,17 @@ mod tests {
         rot.encode(&mut buf).unwrap();
         assert_eq!(buf, [0xac, 0x02, 0x01, 0x40, 0xe0]);
         assert_eq!(MoveEntityRot::decode(&mut buf.as_slice()).unwrap(), rot);
+    }
+
+    #[test]
+    fn disconnect_is_a_component_alone() {
+        // from the 26.3 codec: the text "hi"
+        let mut buf = Vec::new();
+        Disconnect {
+            reason: Component::text("hi"),
+        }
+        .encode(&mut buf)
+        .unwrap();
+        assert_eq!(buf, [8, 0, 2, b'h', b'i']);
     }
 }

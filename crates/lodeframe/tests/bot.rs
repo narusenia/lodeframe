@@ -244,3 +244,28 @@ async fn a_bot_out_of_sight_is_removed_and_its_moves_do_not_arrive_but_its_chat_
 
     server.stop();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn logging_in_again_under_the_same_name_cuts_off_the_first_connection_only() {
+    let server = start().await;
+    let mut first = Bot::connect(server.addr(), "Steve").await.unwrap();
+    let mut second = Bot::connect(server.addr(), "Steve").await.unwrap();
+
+    // the first is told, and then its connection ends
+    first
+        .recv_until(WAIT, |f| {
+            (f.id == lodeframe::protocol::ids::play::clientbound::DISCONNECT).then_some(())
+        })
+        .await
+        .unwrap();
+    assert!(first.recv_until(WAIT, |_| None::<()>).await.is_err());
+
+    // the second goes on as if nothing happened, even though the first has ended
+    second.chat("still here").await.unwrap();
+    second
+        .recv_until(WAIT, said("Steve", "still here"))
+        .await
+        .unwrap();
+
+    server.stop();
+}

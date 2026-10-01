@@ -89,6 +89,7 @@ impl<I: Instance> TestEnv<I> {
     pub fn connect(&mut self, name: &str) -> FakePlayer {
         let uuid = Uuid::offline(name);
         let (outbound, inbox) = mpsc::channel(OUTBOX);
+        let connection = outbound.downgrade();
         self.instance.handle(Message::Join {
             profile: Profile {
                 uuid,
@@ -96,7 +97,11 @@ impl<I: Instance> TestEnv<I> {
             },
             outbound,
         });
-        FakePlayer { uuid, inbox }
+        FakePlayer {
+            uuid,
+            inbox,
+            connection,
+        }
     }
 
     /// Sends `packet` as `player`. The instance has handled it when this returns.
@@ -118,6 +123,7 @@ impl<I: Instance> TestEnv<I> {
     pub fn disconnect(&mut self, player: FakePlayer) {
         self.instance.handle(Message::Leave {
             player: player.uuid,
+            outbound: player.connection,
         });
     }
 }
@@ -127,6 +133,7 @@ impl<I: Instance> TestEnv<I> {
 pub struct FakePlayer {
     uuid: Uuid,
     inbox: mpsc::Receiver<Packets>,
+    connection: mpsc::WeakSender<Packets>,
 }
 
 impl FakePlayer {

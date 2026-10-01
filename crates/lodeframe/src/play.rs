@@ -40,6 +40,8 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
     let player = profile.uuid;
     let name = profile.name.clone();
     let (outbound, mut from_instance) = mpsc::channel::<Packets>(OUTBOX);
+    // weak: the instance's copy alone keeps the channel open, so that it can end the connection
+    let connection = outbound.downgrade();
     instance
         .send(Message::Join { profile, outbound })
         .await
@@ -56,7 +58,12 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
         Err(e) => tracing::warn!(error = %e, "left after an error"),
     });
     // the instance may already be gone; there is nobody left to tell
-    let _ = instance.send(Message::Leave { player }).await;
+    let _ = instance
+        .send(Message::Leave {
+            player,
+            outbound: connection,
+        })
+        .await;
     result
 }
 
