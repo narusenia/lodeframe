@@ -61,4 +61,4 @@
 | `Server` の設定（圧縮しきい値、online mode、proxy 転送、複数 Instance、Ctrl-C での停止） | M1-17 | REQ-AUTH-001・REQ-WORLD-005 | 同上 |
 | サーバー一覧の在線人数 | M1-17 | v0.2 | 同上 |
 | 入室の拒否（ログイン前の async イベント） | M1-17 | REQ-API-003 | 同上 |
-| lobby の評価で見つかった API の不満（ハンドラの文脈の型・発火中のイベント・Component の子要素・送信者名の整形） | M1-17 | v0.2 | 同上と decisions.md の D29 |
+| lobby の評価で見つかった API の不満（ハンドラの文脈の型・発火中のイベント・Component の子要素・送信者名の整形・1 人を除く送信） | M1-17 | v0.2 | 同上と decisions.md の D29 |

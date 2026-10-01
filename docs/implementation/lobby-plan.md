@@ -1,6 +1,6 @@
 # lobby と起動 API 実装計画（M1-17）
 
-> **Status**: 計画 — 2026-10-01
+> **Status**: 実装済み（2 クライアントでの実機確認待ち）— 2026-10-01。実機確認は `cargo run -p lobby`
 
 要件: REQ-API-001・REQ-API-002 の使い心地の評価（v0.1-plan の M1-17）。決定: D9・D16・D28・D29（[decisions.md](../decisions.md)）。
 本体に起動 API（`Server`）と入退室のイベントを足し、`examples/lobby` をそれだけで書く。
@@ -60,6 +60,9 @@ fn lobby(registries: &Registries) -> World<FlatGenerator> {
 | `Component` は 1 つの色・1 つのスタイルのテキストだけ。「名前は金、本文は白」のように混ぜられない | 1 行 1 スタイルにする | 子要素（REQ-TEXT-001 の v0.2）と `text!` |
 | チャットの送信者名は chat type が書式を決め、`ChatEvent` からは変えられない | 名前の見た目は変えられない | 自前で整形して `broadcast` する経路か、送信者名の差し替えを `ChatEvent` に足す |
 | プレイヤーを指すのは `Uuid` と名前だけ。メッセージ送信は `world.send_message(uuid, ..)` | そのまま | Audience（REQ-TEXT-003） |
+| **書いて分かった**: 特定の 1 人を除いて送れない。入室の「+ 名前」は本人にも届く | 本人にも届くまま | Audience（除外つきの宛先） |
+| **書いて分かった**: ハンドラの文脈の型注釈が `World<FlatGenerator>` の別名なしでは読めない（lobby は `type Lobby = ..` を置いた） | 別名で凌ぐ | 上の「文脈の型」と同じ。型消去したハンドルで消える |
+| **解消した**: 起動の組み立て（`main` は 5 行、4 か所の重複は消えた） | `Server` | — |
 
 ### v0.1 でやらなかったこと（後で対応する）
 
