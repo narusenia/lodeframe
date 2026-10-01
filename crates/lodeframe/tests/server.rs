@@ -86,3 +86,19 @@ async fn stopping_the_server_ends_the_connections_and_wait_returns() {
     assert!(ended.is_err());
     server.wait().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_tick_stats_follow_the_ticks() {
+    let server = start("x").await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let before = server.tick_stats();
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let after = server.tick_stats();
+
+    // 20 ticks a second: about 10 in half a second, with slack for a busy machine
+    let ticks = after.ticks - before.ticks;
+    assert!((5..=15).contains(&ticks), "{ticks} ticks in 500 ms");
+    assert!(after.busy >= before.busy);
+    server.stop();
+}
