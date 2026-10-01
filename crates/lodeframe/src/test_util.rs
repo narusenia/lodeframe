@@ -144,6 +144,16 @@ impl FakePlayer {
         out
     }
 
+    /// Like [`drain`](Self::drain), keeping the messages apart: the packets the instance sent in
+    /// one go (for instance all the moves of a tick) come together, oldest message first.
+    pub fn drain_messages(&mut self) -> Vec<Vec<Received>> {
+        let mut out = Vec::new();
+        while let Ok(packets) = self.inbox.try_recv() {
+            out.push(packets.into_iter().map(Received::new).collect());
+        }
+        out
+    }
+
     /// Like [`drain`](Self::drain), keeping only the packets that are a `P`.
     pub fn drain_as<P: Packet + Decode>(&mut self) -> Vec<P> {
         self.drain()
