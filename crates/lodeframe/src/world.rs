@@ -15,13 +15,13 @@ use crate::{
         ids, packet_body,
         packets::play::{
             ACTION_START_DESTROY_BLOCK, AddEntity, BlockChangedAck, BlockUpdate, Chat,
-            ChunkBatchFinished, ChunkBatchStart, DisguisedChat, EntityPositionSync, FLAG_SNEAKING,
-            ForgetLevelChunk, GameEvent, INPUT_SNEAK, LEVEL_CHUNKS_LOAD_START, Login,
-            MOVE_UNITS_PER_BLOCK, MoveEntityPos, MoveEntityPosRot, MoveEntityRot, MovePlayerPos,
-            MovePlayerPosRot, MovePlayerRot, MovePlayerStatusOnly, ON_GROUND, POSE_CROUCHING,
-            PlayerAction, PlayerInfo, PlayerInfoAdd, PlayerInfoRemove, PlayerInput, PlayerPosition,
-            RemoveEntities, RotateHead, SetChunkCacheCenter, SetEntityFlagsAndPose, SpawnInfo,
-            SystemChat, UseItemOn, angle,
+            ChunkBatchFinished, ChunkBatchStart, Disconnect, DisguisedChat, EntityPositionSync,
+            FLAG_SNEAKING, ForgetLevelChunk, GameEvent, INPUT_SNEAK, LEVEL_CHUNKS_LOAD_START,
+            Login, MOVE_UNITS_PER_BLOCK, MoveEntityPos, MoveEntityPosRot, MoveEntityRot,
+            MovePlayerPos, MovePlayerPosRot, MovePlayerRot, MovePlayerStatusOnly, ON_GROUND,
+            POSE_CROUCHING, PlayerAction, PlayerInfo, PlayerInfoAdd, PlayerInfoRemove, PlayerInput,
+            PlayerPosition, RemoveEntities, RotateHead, SetChunkCacheCenter, SetEntityFlagsAndPose,
+            SpawnInfo, SystemChat, UseItemOn, angle,
         },
         split_packet_id,
     },
@@ -440,6 +440,10 @@ impl<L: ChunkLoader + 'static> World<L> {
 
     fn join(&mut self, profile: Profile, outbound: tokio::sync::mpsc::Sender<Packets>) {
         let id = profile.uuid;
+        if self.players.contains_key(&id) {
+            // the same player logged in again: the old connection goes, as in the game
+            self.kick(id, "You logged in from another location");
+        }
         self.sessions.join(id, outbound);
         self.next_entity_id += 1;
         let entity_id = self.next_entity_id;
@@ -830,6 +834,17 @@ impl<L: ChunkLoader + 'static> World<L> {
         Ok(())
     }
 
+    /// Tells `id` why they are being disconnected, then removes them as if they had left. Their
+    /// connection ends once it has written the message.
+    fn kick(&mut self, id: Uuid, reason: &str) {
+        if let Ok(body) = packet_body(&Disconnect {
+            reason: Component::text(reason),
+        }) {
+            self.sessions.send(id, body);
+        }
+        self.leave(id);
+    }
+
     /// How far apart, in chunks, players can be and still see each other.
     fn entity_range(&self) -> u32 {
         self.entity_view_distance.min(self.view_distance)
@@ -1069,7 +1084,13 @@ impl<L: ChunkLoader + 'static> Instance for World<L> {
         match message {
             Message::Join { profile, outbound } => self.join(profile, outbound),
             Message::Packet { player, body } => self.packet(player, &body),
-            Message::Leave { player } => self.leave(player),
+            Message::Leave { player, outbound } => {
+                // a connection that was replaced by a newer one of the same player does not
+                // take the newer one with it
+                if self.sessions.is_current(player, &outbound) {
+                    self.leave(player);
+                }
+            }
         }
     }
 

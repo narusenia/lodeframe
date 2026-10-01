@@ -1238,3 +1238,50 @@ fn walking_away_from_and_back_to_a_crowd_is_one_message_each_way() {
     assert_eq!(with_entities.len(), 1);
     assert_eq!(count(with_entities[0], out::ADD_ENTITY), 3);
 }
+
+#[test]
+fn a_second_login_of_the_same_name_cuts_off_the_first_and_leaves_the_second_alone() {
+    let mut env = env();
+    let joins = Recorder::<PlayerJoinEvent>::attach(env.instance_mut().events_mut());
+    let leaves = Recorder::<PlayerLeaveEvent>::attach(env.instance_mut().events_mut());
+    let mut first = env.connect("Steve");
+    let mut alex = env.connect("Alex");
+    first.drain();
+    alex.drain();
+
+    let mut second = env.connect("Steve");
+
+    // the first is told why and then cut off
+    let told = first.drain();
+    let mut reason = Vec::new();
+    lodeframe::protocol::packets::play::Disconnect {
+        reason: Component::text("You logged in from another location"),
+    }
+    .encode(&mut reason)
+    .unwrap();
+    assert_eq!(count(&told, out::DISCONNECT), 1);
+    assert_eq!(
+        told.iter()
+            .find(|r| r.id == out::DISCONNECT)
+            .unwrap()
+            .payload(),
+        reason
+    );
+    assert!(first.is_disconnected());
+    // the second gets the world as a new player does
+    assert_eq!(count(&second.drain(), out::LOGIN), 1);
+    // the others see one Steve go and one come, and the old entity is not left behind
+    let seen = alex.drain();
+    assert_eq!(removed_entities(&seen), [1]);
+    assert!(position(&seen, out::REMOVE_ENTITIES) < position(&seen, out::ADD_ENTITY));
+    assert_eq!(count(&seen, out::ADD_ENTITY), 1);
+    assert_eq!(leaves.take().len(), 1);
+    assert_eq!(joins.take().len(), 3);
+
+    // the old connection ends: that must not take the new one with it
+    env.disconnect(first);
+    assert!(alex.drain().is_empty(), "nobody left");
+    env.send(&second, &walk(2.5));
+    env.tick(1);
+    assert_eq!(alex.drain_as::<MoveEntityPos>().len(), 1);
+}

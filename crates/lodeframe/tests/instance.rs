@@ -238,7 +238,10 @@ impl Instance for Null {
 #[tokio::test]
 async fn a_full_inbox_holds_the_sender_until_the_instance_ticks() {
     let (mut runner, handle) = Runner::new(Null);
-    let leave = || Message::Leave { player: Uuid(1) };
+    let leave = || Message::Leave {
+        player: Uuid(1),
+        outbound: mpsc::channel(1).0.downgrade(),
+    };
     // fill the inbox without ticking
     let mut sent = 0;
     while timeout(ms(20), handle.send(leave())).await.is_ok() {
@@ -302,6 +305,27 @@ async fn a_group_of_packets_takes_one_place_in_the_queue_and_arrives_in_order() 
     assert_eq!(sessions.len(), 0);
 }
 
+#[tokio::test]
+async fn only_the_connection_a_player_is_on_now_is_current() {
+    let mut sessions = Sessions::default();
+    let (first, _first_rx) = mpsc::channel(OUTBOX);
+    let first_ended = first.downgrade();
+    sessions.join(Uuid(1), first);
+    assert!(sessions.is_current(Uuid(1), &first_ended));
+
+    // the player logs in again: the first connection is not theirs any more
+    let (second, _second_rx) = mpsc::channel(OUTBOX);
+    let second_ended = second.downgrade();
+    sessions.join(Uuid(1), second);
+    assert!(!sessions.is_current(Uuid(1), &first_ended));
+    assert!(sessions.is_current(Uuid(1), &second_ended));
+
+    // nor after they were dropped, or for a player who is not here
+    sessions.leave(Uuid(1));
+    assert!(!sessions.is_current(Uuid(1), &second_ended));
+    assert!(!sessions.is_current(Uuid(2), &second_ended));
+}
+
 /// Records what reaches it and answers every packet with its own body.
 struct Echo {
     sessions: Sessions,
@@ -322,7 +346,7 @@ impl Instance for Echo {
                 self.log.lock().unwrap().push(format!("packet {body:?}"));
                 self.sessions.send(player, body);
             }
-            Message::Leave { player } => {
+            Message::Leave { player, .. } => {
                 self.log.lock().unwrap().push("leave".into());
                 self.sessions.leave(player);
             }
