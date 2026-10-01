@@ -1,6 +1,6 @@
 # ブロック設置・破壊 実装計画（M1-15）
 
-> **Status**: 実装済み（2 クライアントでの実機確認待ち）— 2026-10-01。実機確認は `cargo run -p lodeframe --example blocks`
+> **Status**: 実装済み・実機確認済み（2 クライアントで壊した・置いたブロックが互いに見え、丸石への差し替えとキャンセルが効く）— 2026-10-01。実機確認は `cargo run -p lodeframe --example blocks`
 
 要件: REQ-API-002（ブロック部分）。決定: D9・D16・D21（[decisions.md](../decisions.md)）。
 protocol（パケット型）と本体（`World` のチャンク編集・配信・イベント）にまたがるため、ここに設計を置く。
