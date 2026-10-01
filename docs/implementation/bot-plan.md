@@ -1,6 +1,6 @@
 # 自前ボットと統合テスト 実装計画（M1-16）
 
-> **Status**: 計画 — 2026-10-01
+> **Status**: 実装済み — 2026-10-01（`mise run check` と、実サーバー（release）へのボット 10 体の接続・5 秒の歩行で確認）
 
 要件: REQ-INFRA-002。決定: D15・D27（[decisions.md](../decisions.md)）。
 新しい crate（`lodeframe-bot`）と、本体の統合テスト、`xtask bot` にまたがるため、ここに設計を置く。
@@ -73,4 +73,8 @@ bin は `lodeframe-bot --addr <addr> --count <N> --seconds <S>`。N 体を少し
 ## 動作確認
 
 - `mise run check`
-- `cargo run -p lodeframe --example offline_login` を立てて `cargo xtask bot --count 20 --seconds 10`
+- `cargo run --release -p lodeframe --example offline_login 127.0.0.1:25599` を立てて `cargo xtask bot --addr 127.0.0.1:25599 --count 10 --seconds 5`
+
+## 動かして分かったこと
+
+release のサーバー（view distance 8）にボット 10 体を 20ms 間隔で入れると、全員が接続して 5 秒歩き、`connected 10, failed 0, packets read 17119`、全体で約 12 秒かかった。サーバーのログには `can't keep up, skipping ticks behind_ms=6310` が出た。入室のたびに全チャンク（289 個）の encode が instance スレッドを塞ぐためで、M1-13 の確認で分かっていた問題（チャンクを tick ごとに少しずつ送る）が N 体の入室で目に見える形になった。直す単位は backlog の持ち越しに入れた。
