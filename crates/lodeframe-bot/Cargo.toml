@@ -1,0 +1,17 @@
+[package]
+name = "lodeframe-bot"
+description = "A lightweight Minecraft: Java Edition bot for testing lodeframe servers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+lodeframe-protocol.workspace = true
+tokio = { workspace = true, features = ["net", "io-util", "time", "rt-multi-thread", "macros"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true

@@ -162,6 +162,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lodeframe-bot"
+version = "0.0.0"
+dependencies = [
+ "lodeframe-protocol",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "lodeframe-macros"
 version = "0.0.0"
 dependencies = [
