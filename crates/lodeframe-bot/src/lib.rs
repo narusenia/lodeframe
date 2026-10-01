@@ -11,12 +11,12 @@
 use std::{io, time::Duration};
 
 use lodeframe_protocol::{
-    BlockPos, Decode, Direction, Encode, FrameDecoder, Nbt, PROTOCOL_VERSION, Packet, Uuid,
-    VERSION_NAME, VarInt, Vec3, encode_frame, ids, packet_body,
+    BlockPos, Decode, Direction, Encode, FrameDecoder, Identifier, Nbt, PROTOCOL_VERSION, Packet,
+    Uuid, VERSION_NAME, VarInt, Vec3, encode_frame, ids, packet_body,
     packets::{
         configuration::{
-            AckFinishConfiguration, ClientboundKnownPacks, FinishConfiguration,
-            ServerboundKnownPacks,
+            AckFinishConfiguration, BRAND_CHANNEL, ClientboundCustomPayload, ClientboundKnownPacks,
+            FinishConfiguration, ServerboundKnownPacks,
         },
         handshake::Intention,
         login::{Hello, LoginAcknowledged, LoginCompression, LoginFinished},
@@ -160,6 +160,7 @@ pub struct Bot<S = TcpStream> {
     position: Vec3,
     sequence: i32,
     received: u64,
+    brand: Option<String>,
 }
 
 impl Bot<TcpStream> {
@@ -186,6 +187,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Bot<S> {
             position: Vec3::ZERO,
             sequence: 0,
             received: 0,
+            brand: None,
         };
         timeout(JOIN_TIMEOUT, bot.join())
             .await
@@ -222,7 +224,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Bot<S> {
         }
         loop {
             let frame = self.read_frame().await?;
-            if frame.is::<ClientboundKnownPacks>() {
+            if frame.is::<ClientboundCustomPayload>() {
+                let payload = frame.decode::<ClientboundCustomPayload>()?;
+                if payload.channel == Identifier::new(BRAND_CHANNEL)? {
+                    self.brand = String::decode(&mut payload.data.as_slice()).ok();
+                }
+            } else if frame.is::<ClientboundKnownPacks>() {
                 // the server must hear the packs it offered, or it will not send the registries
                 let packs = frame.decode::<ClientboundKnownPacks>()?.packs;
                 debug_assert!(packs.iter().all(|p| p.version == VERSION_NAME));
@@ -250,6 +257,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Bot<S> {
     /// The name the bot logged in with.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The name the server gave itself in configuration (what F3 shows), if it said.
+    pub fn server_brand(&self) -> Option<&str> {
+        self.brand.as_deref()
     }
 
     /// The bot's UUID.
@@ -456,6 +468,7 @@ mod tests {
             position: Vec3::ZERO,
             sequence: 0,
             received: 0,
+            brand: None,
         }
     }
 

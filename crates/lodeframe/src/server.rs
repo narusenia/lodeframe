@@ -40,6 +40,7 @@ const COMPRESSION_THRESHOLD: usize = 256;
 pub struct Server {
     address: String,
     motd: String,
+    brand: String,
 }
 
 impl Server {
@@ -49,12 +50,20 @@ impl Server {
         Self {
             address: address.into(),
             motd: "lodeframe".into(),
+            brand: "Lodeframe".into(),
         }
     }
 
     /// The line shown under the name in the server list.
     pub fn motd(mut self, motd: impl Into<String>) -> Self {
         self.motd = motd.into();
+        self
+    }
+
+    /// The name of the server that the game shows next to it in the debug screen (F3). The default
+    /// is `Lodeframe`.
+    pub fn brand(mut self, brand: impl Into<String>) -> Self {
+        self.brand = brand.into();
         self
     }
 
@@ -85,18 +94,23 @@ impl Server {
             instance::spawn("world", SystemClock, move || world(&registries))?
         };
         let info = StatusInfo::new(self.motd);
+        let brand = Arc::new(self.brand);
         let task = tokio::spawn(serve(listener, Config::default(), {
             let instance = instance.clone();
             move |mut conn, intention| {
-                let (registries, instance, info) =
-                    (registries.clone(), instance.clone(), info.clone());
+                let (registries, instance, info, brand) = (
+                    registries.clone(),
+                    instance.clone(),
+                    info.clone(),
+                    brand.clone(),
+                );
                 async move {
                     tracing::debug!(?intention, "handshake");
                     if conn.state() == State::Status {
                         return status::respond(&mut conn, &info).await;
                     }
                     let profile = login::offline(&mut conn, Some(COMPRESSION_THRESHOLD)).await?;
-                    configuration::run(&mut conn, &registries).await?;
+                    configuration::run(&mut conn, &registries, &brand).await?;
                     play::run(conn, profile, instance).await
                 }
             }
