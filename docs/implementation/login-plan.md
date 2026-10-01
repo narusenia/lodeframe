@@ -35,6 +35,7 @@ Configuration ではレジストリ（dimension type、biome 等）をクライ�
 1. Handshake（M1-06）→ Login へ
 2. クライアント `Hello`（名前・UUID）→ サーバー `LoginCompression`（任意）→ `LoginFinished`（offline UUID・名前・空のプロパティ）
 3. クライアント `LoginAcknowledged` → Configuration へ
+3a. サーバーが最初に `CustomPayload`（チャンネル `minecraft:brand`、本体は文字列）を送る。クライアントがデバッグ画面（F3）に出すサーバー名で、送らないと `null` と出る。既定は `Lodeframe`、`Server::brand(..)` で変えられる（26.3 の codec で形式を確認）
 4. クライアント `ClientInformation`（受け取って保存）。サーバー `SelectKnownPacks`（`minecraft:core`）→ クライアント `SelectKnownPacks`
 5. サーバー `RegistryData`（レジストリごと。vanilla 分は NBT なし、利用者分は NBT 付き）、`UpdateTags`（空で足りるか実測）
 6. サーバー `FinishConfiguration` → クライアント `FinishConfiguration` → Play へ
