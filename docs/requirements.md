@@ -297,8 +297,8 @@ Adventure 相当の層（D19）。Component と MiniMessage は `lodeframe-text`
 
 - `lodeframe-protocol` で書いた軽量ボット（D15）。
 - **受入条件**
-  - [ ] ボットがログイン・移動・チャットを行う統合テストが CI で走る
-  - [ ] 同じボットで N 体の負荷試験を起動できる
+  - [x] ボットがログイン・移動・チャットを行う統合テストが CI で走る
+  - [x] 同じボットで N 体の負荷試験を起動できる
 
 ### REQ-INFRA-003: crates.io 公開
 

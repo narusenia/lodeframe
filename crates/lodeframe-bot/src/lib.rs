@@ -83,6 +83,17 @@ impl Frame {
     }
 }
 
+impl Frame {
+    /// The text, if this is a `SystemChat` that is not above the hotbar.
+    pub fn system_message(&self) -> Option<String> {
+        if self.id != ids::play::clientbound::SYSTEM_CHAT {
+            return None;
+        }
+        let raw = RawSystemChat::decode(&mut self.payload.as_slice()).ok()?;
+        (!raw.overlay).then(|| plain_text(&raw.content))
+    }
+}
+
 /// What a player said, as the bot sees it: the sender's name and the text, without styles.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatLine {
@@ -103,6 +114,14 @@ struct RawChat {
     name: Nbt,
     #[allow(dead_code, reason = "part of the wire format")]
     target_name: Option<Nbt>,
+}
+
+/// A `SystemChat` as it is on the wire.
+#[derive(Decode)]
+#[lodeframe(crate = lodeframe_protocol)]
+struct RawSystemChat {
+    content: Nbt,
+    overlay: bool,
 }
 
 /// The text of a component: a bare string, or the `text` of a compound. Children are left out.
@@ -517,5 +536,20 @@ mod tests {
             payload: Vec::new(),
         };
         assert_eq!(other.chat_line(), None);
+    }
+
+    #[test]
+    fn a_system_message_is_read_unless_it_is_an_overlay() {
+        let frame = |overlay: bool| {
+            let mut payload = Vec::new();
+            Nbt::from("welcome").encode(&mut payload).unwrap();
+            payload.push(u8::from(overlay));
+            Frame {
+                id: ids::play::clientbound::SYSTEM_CHAT,
+                payload,
+            }
+        };
+        assert_eq!(frame(false).system_message().as_deref(), Some("welcome"));
+        assert_eq!(frame(true).system_message(), None);
     }
 }
