@@ -227,7 +227,7 @@ pub mod configuration {
 /// Play state. Only what the connection layer itself needs; the game packets come with the
 /// units that use them.
 pub mod play {
-    use crate::{BlockPos, Decode, Encode, Identifier, Packet, VarInt, Vec3};
+    use crate::{BlockPos, Decode, Encode, Identifier, Packet, Uuid, VarInt, Vec3};
 
     /// Sent now and then; the client must answer with the same id or is timed out.
     #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Packet)]
@@ -425,6 +425,197 @@ pub mod play {
     #[packet(id = crate::ids::play::serverbound::PLAYER_LOADED, state = Play, side = Serverbound)]
     pub struct PlayerLoaded;
 
+    /// Adds players to the tab list. The action set is fixed: add player, game mode, listed,
+    /// latency.
+    #[derive(Debug, Clone, PartialEq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::PLAYER_INFO_UPDATE, state = Play, side = Clientbound)]
+    pub struct PlayerInfoAdd {
+        /// The action bit mask; [`PlayerInfoAdd::ACTIONS`] for what this type sends.
+        pub actions: u8,
+        /// The players.
+        pub players: Vec<PlayerInfo>,
+    }
+
+    impl PlayerInfoAdd {
+        /// Add player (bit 0), game mode (bit 2), listed (bit 3) and latency (bit 4).
+        pub const ACTIONS: u8 = 0b1_1101;
+
+        /// A packet that adds `players`.
+        pub fn new(players: Vec<PlayerInfo>) -> Self {
+            Self {
+                actions: Self::ACTIONS,
+                players,
+            }
+        }
+    }
+
+    /// One tab list entry of [`PlayerInfoAdd`].
+    #[derive(Debug, Clone, PartialEq, Encode, Decode)]
+    #[lodeframe(crate = crate)]
+    pub struct PlayerInfo {
+        /// The player.
+        pub uuid: Uuid,
+        /// Name shown in the list.
+        pub name: String,
+        /// Skin and the like.
+        pub properties: Vec<super::login::ProfileProperty>,
+        /// 0 survival, 1 creative, 2 adventure, 3 spectator.
+        pub game_mode: VarInt,
+        /// Whether the player shows in the list.
+        pub listed: bool,
+        /// Ping in milliseconds.
+        pub latency: VarInt,
+    }
+
+    /// Removes players from the tab list.
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::PLAYER_INFO_REMOVE, state = Play, side = Clientbound)]
+    pub struct PlayerInfoRemove {
+        /// The players.
+        pub uuids: Vec<Uuid>,
+    }
+
+    /// Angle in degrees as one byte, 256 steps to a turn.
+    pub fn angle(degrees: f32) -> u8 {
+        ((degrees * 256.0 / 360.0).floor() as i32) as u8
+    }
+
+    /// Makes an entity appear.
+    #[derive(Debug, Clone, PartialEq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::ADD_ENTITY, state = Play, side = Clientbound)]
+    pub struct AddEntity {
+        /// Id the entity is known by from now on.
+        pub entity_id: VarInt,
+        /// The entity's UUID; for a player, theirs.
+        pub uuid: Uuid,
+        /// Kind of entity.
+        pub kind: crate::EntityType,
+        /// Where it is.
+        pub position: Vec3,
+        /// Velocity in the low-precision vector encoding. Only `0` (at rest) is supported.
+        pub velocity: u8,
+        /// Up and down, see [`angle`].
+        pub pitch: u8,
+        /// Around the y axis, see [`angle`].
+        pub yaw: u8,
+        /// Head yaw, see [`angle`].
+        pub head_yaw: u8,
+        /// Kind-specific data; 0 for a player.
+        pub data: VarInt,
+    }
+
+    /// Puts an entity at an absolute position.
+    #[derive(Debug, Clone, PartialEq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::ENTITY_POSITION_SYNC, state = Play, side = Clientbound)]
+    pub struct EntityPositionSync {
+        /// The entity.
+        pub entity_id: VarInt,
+        /// Position path kind; 0 is a single position.
+        pub path: u8,
+        /// The position.
+        pub position: Vec3,
+        /// Degrees around the y axis.
+        pub yaw: f32,
+        /// Degrees up and down.
+        pub pitch: f32,
+        /// Whether it stands on the ground.
+        pub on_ground: bool,
+    }
+
+    /// Turns an entity's head.
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::ROTATE_HEAD, state = Play, side = Clientbound)]
+    pub struct RotateHead {
+        /// The entity.
+        pub entity_id: VarInt,
+        /// See [`angle`].
+        pub head_yaw: u8,
+    }
+
+    /// Makes entities disappear.
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::REMOVE_ENTITIES, state = Play, side = Clientbound)]
+    pub struct RemoveEntities {
+        /// The entities.
+        pub entity_ids: Vec<VarInt>,
+    }
+
+    /// Entity flag bit for sneaking.
+    pub const FLAG_SNEAKING: u8 = 0x02;
+    /// The crouching pose.
+    pub const POSE_CROUCHING: i32 = 5;
+
+    /// The two pieces of entity metadata a sneaking player changes: the flags and the pose.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::SET_ENTITY_DATA, state = Play, side = Clientbound)]
+    pub struct SetEntityFlagsAndPose {
+        /// The entity.
+        pub entity_id: VarInt,
+        /// Entity flags, like [`FLAG_SNEAKING`].
+        pub flags: u8,
+        /// Pose id, like [`POSE_CROUCHING`]; 0 is standing.
+        pub pose: VarInt,
+    }
+
+    /// Metadata index and serializer type of the flags (a byte) and of the pose.
+    const FLAGS: [u8; 2] = [0, 0];
+    const POSE: [u8; 2] = [6, 20];
+    const END: u8 = 0xff;
+
+    impl Encode for SetEntityFlagsAndPose {
+        fn encode(&self, w: &mut impl std::io::Write) -> crate::Result<()> {
+            self.entity_id.encode(w)?;
+            w.write_all(&FLAGS)?;
+            self.flags.encode(w)?;
+            w.write_all(&POSE)?;
+            self.pose.encode(w)?;
+            END.encode(w)
+        }
+    }
+
+    impl Decode for SetEntityFlagsAndPose {
+        fn decode(r: &mut &[u8]) -> crate::Result<Self> {
+            fn expect(r: &mut &[u8], bytes: &[u8]) -> crate::Result<()> {
+                if crate::take(r, bytes.len())? == bytes {
+                    Ok(())
+                } else {
+                    Err(crate::Error::InvalidValue("unsupported entity metadata"))
+                }
+            }
+            let entity_id = VarInt::decode(r)?;
+            expect(r, &FLAGS)?;
+            let flags = u8::decode(r)?;
+            expect(r, &POSE)?;
+            let pose = VarInt::decode(r)?;
+            expect(r, &[END])?;
+            Ok(Self {
+                entity_id,
+                flags,
+                pose,
+            })
+        }
+    }
+
+    /// Bit for sneaking in [`PlayerInput::flags`].
+    pub const INPUT_SNEAK: u8 = 0x20;
+
+    /// What keys the player holds (forward 1, backward 2, left 4, right 8, jump 0x10, sneak
+    /// 0x20, sprint 0x40).
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::serverbound::PLAYER_INPUT, state = Play, side = Serverbound)]
+    pub struct PlayerInput {
+        /// The key bits.
+        pub flags: u8,
+    }
+
     /// Bit 0 of the flags byte in the move packets.
     pub const ON_GROUND: u8 = 1;
     /// Bit 1 of the flags byte in the move packets.
@@ -528,6 +719,87 @@ mod tests {
         let mut buf = Vec::new();
         ForgetLevelChunk { x: -1, z: 2 }.encode(&mut buf).unwrap();
         assert_eq!(buf, [0, 0, 0, 2, 0xff, 0xff, 0xff, 0xff]);
+    }
+
+    /// Expected bytes come from encoding the same packets with the 26.3 server's own codecs.
+    #[test]
+    fn player_visibility_packets_match_the_vanilla_encoding() {
+        fn bytes<T: Encode>(v: T) -> Vec<u8> {
+            let mut b = Vec::new();
+            v.encode(&mut b).unwrap();
+            b
+        }
+        let uuid = Uuid(0x0102030405060708_090a0b0c0d0e0f10);
+        assert_eq!(angle(45.0), 0x20);
+        assert_eq!(angle(90.0), 0x40);
+        assert_eq!(angle(180.0), 0x80);
+        assert_eq!(
+            bytes(EntityPositionSync {
+                entity_id: VarInt(7),
+                path: 0,
+                position: crate::Vec3::new(1.5, 2.5, 3.5),
+                yaw: 90.0,
+                pitch: 45.0,
+                on_ground: true,
+            }),
+            [
+                7, 0, 0x3f, 0xf8, 0, 0, 0, 0, 0, 0, 0x40, 4, 0, 0, 0, 0, 0, 0, 0x40, 0xc, 0, 0, 0,
+                0, 0, 0, 0x42, 0xb4, 0, 0, 0x42, 0x34, 0, 0, 1
+            ]
+        );
+        assert_eq!(
+            bytes(RemoveEntities {
+                entity_ids: vec![VarInt(7), VarInt(9)]
+            }),
+            [2, 7, 9]
+        );
+        assert_eq!(
+            bytes(SetEntityFlagsAndPose {
+                entity_id: VarInt(7),
+                flags: FLAG_SNEAKING,
+                pose: VarInt(POSE_CROUCHING),
+            }),
+            [7, 0, 0, 2, 6, 0x14, 5, 0xff]
+        );
+        assert_eq!(
+            bytes(PlayerInput {
+                flags: INPUT_SNEAK | 1
+            }),
+            [0x21]
+        );
+        let mut expected = vec![1];
+        expected.extend(uuid.0.to_be_bytes());
+        assert_eq!(bytes(PlayerInfoRemove { uuids: vec![uuid] }), expected);
+        // the entry layout the vanilla client decoded: name, no properties, mode, listed, latency
+        let add = PlayerInfoAdd::new(vec![PlayerInfo {
+            uuid,
+            name: "Steve".into(),
+            properties: vec![],
+            game_mode: VarInt(1),
+            listed: true,
+            latency: VarInt(0),
+        }]);
+        let mut expected = vec![0x1d, 1];
+        expected.extend(uuid.0.to_be_bytes());
+        expected.extend([5, b'S', b't', b'e', b'v', b'e', 0, 1, 1, 0]);
+        assert_eq!(bytes(add.clone()), expected);
+        roundtrip(add);
+        roundtrip(SetEntityFlagsAndPose {
+            entity_id: VarInt(7),
+            flags: 0,
+            pose: VarInt(0),
+        });
+        roundtrip(AddEntity {
+            entity_id: VarInt(7),
+            uuid,
+            kind: crate::entity_type::PLAYER,
+            position: crate::Vec3::new(1.0, 2.0, 3.0),
+            velocity: 0,
+            pitch: 1,
+            yaw: 2,
+            head_yaw: 3,
+            data: VarInt(0),
+        });
     }
 
     #[test]
