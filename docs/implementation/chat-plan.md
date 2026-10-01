@@ -1,6 +1,6 @@
 # チャット 実装計画（M1-14）
 
-> **Status**: 計画 — 2026-10-01
+> **Status**: 実装済み（2 クライアントでの実機確認待ち）— 2026-10-01
 
 要件: REQ-API-002（チャット部分）・REQ-TEXT-001（v0.1: 色・装飾付きテキストをチャットに表示）。決定: D9・D16・D21（[decisions.md](../decisions.md)）。
 protocol（パケット型）と本体（`World` のイベント配線と配信）にまたがるため、ここに設計を置く。
@@ -48,7 +48,7 @@ Component は `lodeframe-protocol/src/component.rs` の NBT 化をそのまま�
 
 ## テスト
 
-`test-util` のハーネスで書く。`FakePlayer` へチャット注入を足す（`TestEnv::chat`）。
+`test-util` のハーネスで書く。注入は既存の `TestEnv::send` に `Chat` を渡す（専用のヘルパーは足さない）。DisguisedChat は Component の decode がないため、`Received::payload()` を足してバイト列で比べる。
 
 - 全員に届く: 送信者を含む全員が `DisguisedChat` を受け、name と本文が合う
 - キャンセル: 誰にも届かない
