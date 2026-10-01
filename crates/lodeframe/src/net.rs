@@ -99,6 +99,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
         Ok(self.stream.flush().await?)
     }
 
+    /// Writes several bodies as frames with one write and one flush, which costs far fewer system
+    /// calls than [`write_frame`](Self::write_frame) for each.
+    pub async fn write_frames(&mut self, bodies: &[Vec<u8>]) -> Result<()> {
+        let mut wire = Vec::new();
+        for body in bodies {
+            encode_frame(body, self.threshold, &mut wire)?;
+        }
+        self.stream.write_all(&wire).await?;
+        Ok(self.stream.flush().await?)
+    }
+
     /// Encodes and writes `packet`.
     pub async fn write_packet<P: Packet + Encode>(&mut self, packet: &P) -> Result<()> {
         self.write_frame(&packet_body(packet)?).await
