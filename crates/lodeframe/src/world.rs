@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use crate::{
     chunk::{ChunkLoader, ChunkPos, ChunkTracker, Chunks},
+    event::{Event, EventNode},
     instance::{Instance, Message, Sessions},
     login::Profile,
     protocol::{
@@ -12,21 +13,63 @@ use crate::{
         entity_type::PLAYER,
         ids, packet_body,
         packets::play::{
-            AddEntity, ChunkBatchFinished, ChunkBatchStart, EntityPositionSync, FLAG_SNEAKING,
-            ForgetLevelChunk, GameEvent, INPUT_SNEAK, LEVEL_CHUNKS_LOAD_START, Login,
-            MovePlayerPos, MovePlayerPosRot, MovePlayerRot, MovePlayerStatusOnly, ON_GROUND,
-            POSE_CROUCHING, PlayerInfo, PlayerInfoAdd, PlayerInfoRemove, PlayerInput,
-            PlayerPosition, RemoveEntities, RotateHead, SetChunkCacheCenter, SetEntityFlagsAndPose,
-            SpawnInfo, angle,
+            AddEntity, Chat, ChunkBatchFinished, ChunkBatchStart, DisguisedChat,
+            EntityPositionSync, FLAG_SNEAKING, ForgetLevelChunk, GameEvent, INPUT_SNEAK,
+            LEVEL_CHUNKS_LOAD_START, Login, MovePlayerPos, MovePlayerPosRot, MovePlayerRot,
+            MovePlayerStatusOnly, ON_GROUND, POSE_CROUCHING, PlayerInfo, PlayerInfoAdd,
+            PlayerInfoRemove, PlayerInput, PlayerPosition, RemoveEntities, RotateHead,
+            SetChunkCacheCenter, SetEntityFlagsAndPose, SpawnInfo, SystemChat, angle,
         },
         split_packet_id,
     },
     registry::Registries,
+    text::Component,
 };
 
 const DIMENSION: &str = "minecraft:overworld";
 const DIMENSION_TYPES: &str = "minecraft:dimension_type";
 const BIOMES: &str = "minecraft:worldgen/biome";
+const CHAT_TYPES: &str = "minecraft:chat_type";
+const CHAT_TYPE: &str = "minecraft:chat";
+/// The longest line the chat box takes.
+const MAX_CHAT: usize = 256;
+
+/// A player said something in the chat. Cancel it to keep it from the others, or replace
+/// [`message`](Self::message) to change what they see.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatEvent {
+    /// Who said it.
+    pub player: Uuid,
+    /// Their name, shown in front of the message.
+    pub name: String,
+    /// What is sent to everyone. It starts as the plain text that was typed; a handler can set
+    /// a styled one.
+    pub message: Component,
+    cancelled: bool,
+}
+
+impl ChatEvent {
+    /// Keeps the message from being sent.
+    pub fn cancel(&mut self) {
+        self.cancelled = true;
+    }
+}
+
+impl Event for ChatEvent {
+    fn is_cancelled(&self) -> bool {
+        self.cancelled
+    }
+}
+
+/// Whether the chat box would have let the player type `text`. The game itself rejects
+/// anything else, so a client that sends it is not the game.
+fn is_chat_line(text: &str) -> bool {
+    !text.is_empty()
+        && text.chars().count() <= MAX_CHAT
+        && text
+            .chars()
+            .all(|c| c != '\u{a7}' && c >= ' ' && c != '\u{7f}')
+}
 
 /// One player in a [`World`].
 struct Player {
@@ -80,10 +123,13 @@ pub struct World<L> {
     players: HashMap<Uuid, Player>,
     dimension_type: i32,
     biome_count: u32,
+    // the holder id of the chat type: the registry id plus one
+    chat_type: i32,
     next_entity_id: i32,
+    events: EventNode<World<L>>,
 }
 
-impl<L: ChunkLoader> World<L> {
+impl<L: ChunkLoader + 'static> World<L> {
     /// A world of the overworld type over `loader`. `registries` must be the ones sent to
     /// the players.
     pub fn new(registries: &Registries, loader: L) -> Self {
@@ -98,8 +144,48 @@ impl<L: ChunkLoader> World<L> {
             players: HashMap::new(),
             dimension_type: dimension_type as i32,
             biome_count: registries.len(BIOMES).unwrap_or(0) as u32,
+            chat_type: registries
+                .network_id(CHAT_TYPES, CHAT_TYPE)
+                .expect("the chat type is in the registry") as i32
+                + 1,
             next_entity_id: 0,
+            events: EventNode::new(),
         }
+    }
+
+    /// The handlers of this world. Events are emitted on it with the world as the context.
+    ///
+    /// While an event is being handled this node is empty, so handlers added to it from inside a
+    /// handler are lost. Attach them before the world runs.
+    pub fn events_mut(&mut self) -> &mut EventNode<Self> {
+        &mut self.events
+    }
+
+    /// Shows `message` to one player in the chat. Does nothing if they are not here.
+    pub fn send_message(&mut self, player: Uuid, message: &Component) {
+        if !self.players.contains_key(&player) {
+            return;
+        }
+        let Ok(body) = packet_body(&SystemChat {
+            content: message.clone(),
+            overlay: false,
+        }) else {
+            return;
+        };
+        if self.send_body(player, body).is_err() {
+            self.leave(player);
+        }
+    }
+
+    /// Shows `message` to everyone in the chat.
+    pub fn broadcast(&mut self, message: &Component) {
+        let Ok(body) = packet_body(&SystemChat {
+            content: message.clone(),
+            overlay: false,
+        }) else {
+            return;
+        };
+        self.send_many(None, body);
     }
 
     fn join(&mut self, profile: Profile, outbound: tokio::sync::mpsc::Sender<Vec<u8>>) {
@@ -274,7 +360,11 @@ impl<L: ChunkLoader> World<L> {
                 let sneaking = PlayerInput::decode(&mut payload)?.flags & INPUT_SNEAK != 0;
                 return self.set_sneaking(id, sneaking);
             }
-            // teleport and batch answers, ...: nothing to do yet
+            ids::play::serverbound::CHAT => {
+                let line = Chat::decode(&mut payload)?;
+                return self.chat(id, line.message);
+            }
+            // commands, teleport and batch answers, ...: nothing to do yet
             _ => return Ok(()),
         };
         let Some(player) = self.players.get_mut(&id) else {
@@ -334,6 +424,38 @@ impl<L: ChunkLoader> World<L> {
         self.send_chunks(id, &changes.send)
     }
 
+    fn chat(&mut self, id: Uuid, text: String) -> Result<()> {
+        let Some(player) = self.players.get(&id) else {
+            return Ok(());
+        };
+        if !is_chat_line(&text) {
+            tracing::debug!(name = %player.name, "ignoring a chat line the game would not send");
+            return Ok(());
+        }
+        let name = player.name.clone();
+        let mut event = ChatEvent {
+            player: id,
+            name: name.clone(),
+            message: Component::text(text),
+            cancelled: false,
+        };
+        // handlers get `&mut self`, so the node is taken out of it while they run
+        let mut events = std::mem::take(&mut self.events);
+        let cancelled = events.emit(&mut event, self);
+        self.events = events;
+        if cancelled {
+            return Ok(());
+        }
+        let line = DisguisedChat {
+            message: event.message,
+            chat_type: VarInt(self.chat_type),
+            name: Component::text(name),
+            target_name: None,
+        };
+        self.send_many(None, packet_body(&line)?);
+        Ok(())
+    }
+
     fn set_sneaking(&mut self, id: Uuid, sneaking: bool) -> Result<()> {
         let Some(player) = self.players.get_mut(&id) else {
             return Ok(());
@@ -353,11 +475,17 @@ impl<L: ChunkLoader> World<L> {
 
     /// Sends `body` to every player but `except`. Players who can't take it are dropped.
     fn send_others(&mut self, except: Uuid, body: Vec<u8>) {
+        self.send_many(Some(except), body);
+    }
+
+    /// Sends `body` to every player, or every one but `except`. Players who can't take it are
+    /// dropped.
+    fn send_many(&mut self, except: Option<Uuid>, body: Vec<u8>) {
         let others: Vec<Uuid> = self
             .players
             .keys()
             .copied()
-            .filter(|u| *u != except)
+            .filter(|u| Some(*u) != except)
             .collect();
         for other in others {
             if !self.sessions.send(other, body.clone()) {
@@ -387,7 +515,7 @@ fn chunk_of(pos: Vec3) -> ChunkPos {
     ChunkPos::new((pos.x.floor() as i32) >> 4, (pos.z.floor() as i32) >> 4)
 }
 
-impl<L: ChunkLoader> Instance for World<L> {
+impl<L: ChunkLoader + 'static> Instance for World<L> {
     fn handle(&mut self, message: Message) {
         match message {
             Message::Join { profile, outbound } => self.join(profile, outbound),
