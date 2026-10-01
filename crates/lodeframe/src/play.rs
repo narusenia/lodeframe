@@ -80,7 +80,15 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin>(
                     .map_err(|_| Error::InvalidValue("instance has stopped"))?;
             }
             body = from_instance.recv() => match body {
-                Some(body) => conn.write_frame(&body).await?,
+                Some(first) => {
+                    // everything that is already waiting goes out in one write
+                    let mut batch = vec![first];
+                    while batch.len() < OUTBOX {
+                        let Ok(next) = from_instance.try_recv() else { break };
+                        batch.push(next);
+                    }
+                    conn.write_frames(&batch).await?;
+                }
                 // the instance dropped this player
                 None => return Ok(()),
             },

@@ -6,19 +6,22 @@ use lodeframe::{
     protocol::{
         BlockPos, Direction, Encode, VarInt, Vec3,
         block::{AIR, COBBLESTONE, STONE},
+        chunk::LevelChunkWithLight,
         ids::play::{clientbound as out, serverbound},
         packets::play::{
-            AddEntity, BlockChangedAck, BlockUpdate, Chat, DisguisedChat, EntityPositionSync,
-            ForgetLevelChunk, INPUT_SNEAK, Login, MovePlayerPos, MovePlayerPosRot, MovePlayerRot,
-            PlayerAction, PlayerInfoAdd, PlayerInfoRemove, PlayerInput, PlayerPosition,
-            RemoveEntities, RotateHead, SetChunkCacheCenter, SetEntityFlagsAndPose, SystemChat,
-            UseItemOn,
+            AddEntity, BlockChangedAck, BlockUpdate, Chat, ChunkBatchFinished, DisguisedChat,
+            EntityPositionSync, FLAG_SNEAKING, ForgetLevelChunk, INPUT_SNEAK, Login, MovePlayerPos,
+            MovePlayerPosRot, MovePlayerRot, PlayerAction, PlayerInfoAdd, PlayerInfoRemove,
+            PlayerInput, PlayerPosition, RemoveEntities, RotateHead, SetChunkCacheCenter,
+            SetEntityFlagsAndPose, SystemChat, UseItemOn,
         },
     },
     registry::Registries,
     test_util::{FakePlayer, Received, Recorder, TestEnv},
     text::{Color, Component},
-    world::{BlockBreakEvent, BlockPlaceEvent, ChatEvent, World},
+    world::{
+        BlockBreakEvent, BlockPlaceEvent, ChatEvent, PlayerJoinEvent, PlayerLeaveEvent, World,
+    },
 };
 
 fn count(received: &[Received], id: i32) -> usize {
@@ -35,6 +38,8 @@ fn walk(x: f64) -> MovePlayerPos {
 fn env() -> TestEnv<World<FlatGenerator>> {
     let mut world = World::new(&Registries::vanilla(), FlatGenerator::default());
     world.view_distance = 2;
+    // all the chunks at once, so that a test sees them right after the join
+    world.chunks_per_tick = usize::MAX;
     TestEnv::new(world)
 }
 
@@ -624,4 +629,406 @@ fn set_block_shows_the_change_to_everyone() {
     let sky = BlockPos::new(0, 320, 0);
     assert!(!env.instance_mut().set_block(sky, STONE.default_state()));
     assert!(steve.drain().is_empty());
+}
+
+fn position(received: &[Received], id: i32) -> usize {
+    received
+        .iter()
+        .position(|r| r.id == id)
+        .unwrap_or_else(|| panic!("no packet {id}"))
+}
+
+#[test]
+fn a_message_from_the_join_handler_reaches_the_newcomer_before_their_chunks() {
+    let mut env = env();
+    env.instance_mut().events_mut().on(
+        |e: &mut PlayerJoinEvent, world: &mut World<FlatGenerator>| {
+            world.send_message(e.player, &Component::text("welcome"));
+        },
+    );
+
+    let got = env.connect("Steve").drain();
+
+    let welcome = position(&got, out::SYSTEM_CHAT);
+    assert!(position(&got, out::LOGIN) < welcome);
+    assert!(welcome < position(&got, out::LEVEL_CHUNK_WITH_LIGHT));
+}
+
+#[test]
+fn the_others_have_heard_of_a_join_by_the_time_the_handler_runs() {
+    let mut env = env();
+    let seen = Recorder::<PlayerJoinEvent>::attach(env.instance_mut().events_mut());
+    env.instance_mut().events_mut().on(
+        |e: &mut PlayerJoinEvent, world: &mut World<FlatGenerator>| {
+            world.broadcast(&Component::text(format!("+ {}", e.name)));
+        },
+    );
+    let mut steve = env.connect("Steve");
+    steve.drain();
+
+    let alex = env.connect("Alex");
+
+    let told = steve.drain();
+    let shown = position(&told, out::ADD_ENTITY);
+    assert!(position(&told, out::PLAYER_INFO_UPDATE) < shown);
+    assert!(shown < position(&told, out::SYSTEM_CHAT));
+    let events = seen.take();
+    assert_eq!(
+        events.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+        ["Steve", "Alex"]
+    );
+    assert_eq!(events[1].player, alex.uuid());
+}
+
+#[test]
+fn a_leave_is_announced_after_the_others_were_told() {
+    let (mut env, steve, mut alex) = two_players();
+    let seen = Recorder::<PlayerLeaveEvent>::attach(env.instance_mut().events_mut());
+    env.instance_mut().events_mut().on(
+        |e: &mut PlayerLeaveEvent, world: &mut World<FlatGenerator>| {
+            world.broadcast(&Component::text(format!("- {}", e.name)));
+        },
+    );
+    let steve_uuid = steve.uuid();
+
+    env.disconnect(steve);
+
+    let told = alex.drain();
+    let removed = position(&told, out::REMOVE_ENTITIES);
+    assert!(removed < position(&told, out::PLAYER_INFO_REMOVE));
+    assert!(position(&told, out::PLAYER_INFO_REMOVE) < position(&told, out::SYSTEM_CHAT));
+    let events = seen.take();
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        (events[0].player, events[0].name.as_str()),
+        (steve_uuid, "Steve")
+    );
+}
+
+fn throttled(per_tick: usize) -> TestEnv<World<FlatGenerator>> {
+    let mut world = World::new(&Registries::vanilla(), FlatGenerator::default());
+    world.view_distance = 2;
+    world.chunks_per_tick = per_tick;
+    TestEnv::new(world)
+}
+
+/// The positions of the chunks in `received`, in the order they came.
+fn chunks_in(received: &[Received]) -> Vec<(i32, i32)> {
+    received
+        .iter()
+        .filter(|r| r.is::<LevelChunkWithLight>())
+        .map(|r| {
+            let chunk: LevelChunkWithLight = r.decode().unwrap();
+            (chunk.x, chunk.z)
+        })
+        .collect()
+}
+
+/// The `count` of every `ChunkBatchFinished` in `received`.
+fn batches_in(received: &[Received]) -> Vec<i32> {
+    received
+        .iter()
+        .filter(|r| r.is::<ChunkBatchFinished>())
+        .map(|r| r.decode::<ChunkBatchFinished>().unwrap().count.0)
+        .collect()
+}
+
+#[test]
+fn chunks_arrive_a_batch_at_a_time_nearest_first() {
+    let mut env = throttled(4);
+    let mut steve = env.connect("Steve");
+
+    // the first batch comes with the join, and starts with the chunk the player stands in
+    let first = steve.drain();
+    assert_eq!(batches_in(&first), [4]);
+    let mut seen = chunks_in(&first);
+    assert_eq!(seen.len(), 4);
+    assert_eq!(seen[0], (0, 0));
+
+    // then one batch per tick until the 25 chunks of the view are there
+    for _ in 0..6 {
+        env.tick(1);
+        let batch = steve.drain();
+        assert_eq!(batches_in(&batch).len(), 1);
+        seen.extend(chunks_in(&batch));
+    }
+    assert_eq!(seen.len(), 25);
+    seen.sort_unstable();
+    seen.dedup();
+    assert_eq!(seen.len(), 25);
+    // nothing more is sent
+    env.tick(3);
+    assert!(steve.drain().is_empty());
+}
+
+#[test]
+fn crossing_a_border_sends_a_batch_at_once_and_the_rest_over_the_ticks() {
+    let mut env = throttled(2);
+    let mut steve = env.connect("Steve");
+    env.tick(20);
+    steve.drain();
+
+    // one column of 5 chunks is new
+    env.send(&steve, &walk(16.5));
+    let at_once = steve.drain();
+    assert_eq!(chunks_in(&at_once).len(), 2);
+    assert_eq!(count(&at_once, out::FORGET_LEVEL_CHUNK), 5);
+
+    env.tick(1);
+    assert_eq!(chunks_in(&steve.drain()).len(), 2);
+    env.tick(1);
+    assert_eq!(chunks_in(&steve.drain()).len(), 1);
+    env.tick(1);
+    assert!(steve.drain().is_empty());
+}
+
+#[test]
+fn chunks_that_are_no_longer_in_view_are_not_sent() {
+    let mut env = throttled(2);
+    let mut steve = env.connect("Steve");
+    env.tick(20);
+    steve.drain();
+
+    // two jumps in a row: the second leaves the view of the first behind before it was sent
+    env.send(&steve, &walk(3.0 * 16.0 + 0.5));
+    let first = chunks_in(&steve.drain());
+    env.send(&steve, &walk(8.0 * 16.0 + 0.5));
+    let mut after = chunks_in(&steve.drain());
+    env.tick(30);
+    after.extend(chunks_in(&steve.drain()));
+
+    assert_eq!(first.len(), 2);
+    // exactly the view around chunk x = 8: what the first jump had left to send is gone
+    let in_view = |(x, z): (i32, i32)| (6..=10).contains(&x) && (-2..=2).contains(&z);
+    assert_eq!(after.len(), 25);
+    assert!(after.iter().all(|c| in_view(*c)));
+}
+
+#[test]
+fn a_player_who_leaves_with_chunks_waiting_is_forgotten() {
+    let mut env = throttled(1);
+    let steve = env.connect("Steve");
+    env.disconnect(steve);
+
+    // the queue went with the player: ticking is harmless and the next player is served
+    env.tick(5);
+    let mut alex = env.connect("Alex");
+    assert_eq!(chunks_in(&alex.drain()), [(0, 0)]);
+}
+
+#[test]
+fn a_chunk_is_encoded_once_and_again_after_a_block_changes() {
+    let at_origin = |received: &[Received]| {
+        received
+            .iter()
+            .filter(|r| r.is::<LevelChunkWithLight>())
+            .find(|r| {
+                let chunk: LevelChunkWithLight = r.decode().unwrap();
+                (chunk.x, chunk.z) == (0, 0)
+            })
+            .map(|r| r.payload().to_vec())
+            .unwrap()
+    };
+    let mut env = env();
+    let first = at_origin(&env.connect("Steve").drain());
+    let second = at_origin(&env.connect("Alex").drain());
+    assert_eq!(first, second);
+
+    // a change in the chunk: the next player gets the chunk as it is now
+    assert!(
+        env.instance_mut()
+            .set_block(BlockPos::new(3, -60, 3), STONE.default_state())
+    );
+    let changed = at_origin(&env.connect("Dave").drain());
+    assert_ne!(changed, first);
+    let again = at_origin(&env.connect("Eve").drain());
+    assert_eq!(again, changed);
+
+    // and it is the chunk a world that had the block from the start would send
+    let mut fresh = env_with_block();
+    assert_eq!(at_origin(&fresh.connect("Zed").drain()), changed);
+}
+
+fn env_with_block() -> TestEnv<World<FlatGenerator>> {
+    let mut env = env();
+    assert!(
+        env.instance_mut()
+            .set_block(BlockPos::new(3, -60, 3), STONE.default_state())
+    );
+    env
+}
+
+/// Far enough from the spawn, with a view distance of 2, to be out of sight: chunk 5.
+const FAR: f64 = 5.0 * 16.0 + 0.5;
+
+fn sneak(env: &mut TestEnv<World<FlatGenerator>>, who: &FakePlayer, on: bool) {
+    env.send(
+        who,
+        &PlayerInput {
+            flags: if on { INPUT_SNEAK } else { 0 },
+        },
+    );
+}
+
+fn removed_entities(received: &[Received]) -> Vec<i32> {
+    received
+        .iter()
+        .filter(|r| r.is::<RemoveEntities>())
+        .flat_map(|r| r.decode::<RemoveEntities>().unwrap().entity_ids)
+        .map(|e| e.0)
+        .collect()
+}
+
+#[test]
+fn players_out_of_sight_do_not_get_each_others_moves_or_sneaking() {
+    let (mut env, mut steve, mut alex) = two_players();
+    env.send(&steve, &walk(FAR));
+    steve.drain();
+    alex.drain();
+
+    env.send(&alex, &walk(3.0));
+    sneak(&mut env, &alex, true);
+    env.send(&steve, &walk(FAR + 1.0));
+
+    assert!(steve.drain().is_empty());
+    assert!(alex.drain().is_empty());
+}
+
+#[test]
+fn walking_out_of_sight_removes_the_entity_and_coming_back_spawns_it_where_it_stands() {
+    let (mut env, mut steve, mut alex) = two_players();
+    // the entity ids are given out in the order of joining
+    let (steve_entity, alex_entity) = (1, 2);
+
+    env.send(&steve, &walk(FAR));
+    let steve_told = steve.drain();
+    let alex_told = alex.drain();
+    assert_eq!(removed_entities(&steve_told), [alex_entity]);
+    assert_eq!(removed_entities(&alex_told), [steve_entity]);
+    // the list is for everyone, in sight or not
+    assert_eq!(count(&steve_told, out::PLAYER_INFO_REMOVE), 0);
+
+    // Alex moves within the chunk they are in; then Steve comes back
+    env.send(&alex, &walk(10.5));
+    assert!(steve.drain().is_empty());
+    env.send(&steve, &walk(0.5));
+
+    let back = steve.drain();
+    let spawned: Vec<AddEntity> = back
+        .iter()
+        .filter(|r| r.is::<AddEntity>())
+        .map(|r| r.decode().unwrap())
+        .collect();
+    assert_eq!(spawned.len(), 1);
+    assert_eq!(spawned[0].entity_id.0, alex_entity);
+    assert_eq!(spawned[0].position, Vec3::new(10.5, -60.0, 0.5));
+    let seen_by_alex = alex.drain();
+    assert_eq!(count(&seen_by_alex, out::ADD_ENTITY), 1);
+    assert_eq!(count(&back, out::PLAYER_INFO_UPDATE), 0);
+}
+
+#[test]
+fn a_sneaking_player_comes_into_view_sitting_down() {
+    let (mut env, mut steve, mut alex) = two_players();
+    env.send(&steve, &walk(FAR));
+    sneak(&mut env, &alex, true);
+    steve.drain();
+    alex.drain();
+
+    env.send(&steve, &walk(0.5));
+
+    let back = steve.drain();
+    assert!(position(&back, out::ADD_ENTITY) < position(&back, out::SET_ENTITY_DATA));
+    let sitting: SetEntityFlagsAndPose = back
+        .iter()
+        .find(|r| r.is::<SetEntityFlagsAndPose>())
+        .unwrap()
+        .decode()
+        .unwrap();
+    assert_eq!(sitting.entity_id.0, 2);
+    assert_eq!(sitting.flags, FLAG_SNEAKING);
+}
+
+#[test]
+fn a_player_who_joins_out_of_sight_of_the_others_gets_the_list_but_no_entities() {
+    let mut env = env();
+    let mut steve = env.connect("Steve");
+    env.send(&steve, &walk(FAR));
+    steve.drain();
+
+    let mut alex = env.connect("Alex");
+
+    for told in [steve.drain(), alex.drain()] {
+        assert_eq!(count(&told, out::PLAYER_INFO_UPDATE), 1);
+        assert_eq!(count(&told, out::ADD_ENTITY), 0);
+    }
+    // and nothing either does reaches the other
+    env.send(&alex, &walk(3.0));
+    assert!(steve.drain().is_empty());
+}
+
+#[test]
+fn a_leave_removes_the_entity_for_those_in_sight_and_the_list_entry_for_everyone() {
+    let mut env = env();
+    let steve = env.connect("Steve");
+    let mut alex = env.connect("Alex");
+    let mut dave = env.connect("Dave");
+    env.send(&dave, &walk(FAR));
+    alex.drain();
+    dave.drain();
+
+    env.disconnect(steve);
+
+    let near = alex.drain();
+    assert_eq!(removed_entities(&near), [1]);
+    assert_eq!(count(&near, out::PLAYER_INFO_REMOVE), 1);
+    let far = dave.drain();
+    assert!(removed_entities(&far).is_empty());
+    assert_eq!(count(&far, out::PLAYER_INFO_REMOVE), 1);
+}
+
+#[test]
+fn block_changes_reach_only_players_who_have_the_chunk_in_view() {
+    let (mut env, mut steve, mut alex) = two_players();
+    env.send(&steve, &walk(FAR));
+    steve.drain();
+    alex.drain();
+
+    assert!(
+        env.instance_mut()
+            .set_block(BlockPos::new(3, -60, 3), STONE.default_state())
+    );
+
+    assert_eq!(count(&alex.drain(), out::BLOCK_UPDATE), 1);
+    assert!(steve.drain().is_empty());
+    // chat is not a matter of sight
+    say(&mut env, &alex, "hello");
+    assert_eq!(chat_lines(&mut steve).len(), 1);
+    // the block changed at Steve's end of the world reaches Steve and not Alex
+    assert!(
+        env.instance_mut()
+            .set_block(BlockPos::new(88, -60, 3), STONE.default_state())
+    );
+    assert_eq!(count(&steve.drain(), out::BLOCK_UPDATE), 1);
+    assert!(block_updates(&alex.drain()).is_empty());
+}
+
+#[test]
+fn the_entity_view_distance_sets_how_far_players_see_each_other() {
+    let mut world = World::new(&Registries::vanilla(), FlatGenerator::default());
+    world.view_distance = 4;
+    world.chunks_per_tick = usize::MAX;
+    world.entity_view_distance = 1;
+    let mut env = TestEnv::new(world);
+    let mut steve = env.connect("Steve");
+    let mut alex = env.connect("Alex");
+    steve.drain();
+    alex.drain();
+
+    // two chunks away: out of sight, though the chunks are still in view
+    env.send(&steve, &walk(2.0 * 16.0 + 0.5));
+    assert_eq!(removed_entities(&steve.drain()), [2]);
+    // one chunk away: in sight again
+    env.send(&steve, &walk(16.5));
+    assert_eq!(count(&steve.drain(), out::ADD_ENTITY), 1);
 }

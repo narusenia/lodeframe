@@ -39,6 +39,47 @@ async fn frames_roundtrip_with_and_without_compression() {
 }
 
 #[tokio::test]
+async fn frames_written_together_are_read_back_one_by_one() {
+    let (a, b) = duplex(1 << 16);
+    let (mut a, mut b) = (Connection::new(a, T), Connection::new(b, T));
+    let bodies = vec![vec![1, 2, 3], vec![3u8; 10_000], vec![9], vec![4u8; 100]];
+    for threshold in [None, Some(64)] {
+        a.set_compression(threshold);
+        b.set_compression(threshold);
+        a.write_frames(&bodies).await.unwrap();
+        for body in &bodies {
+            assert_eq!(&b.read_frame().await.unwrap(), body);
+        }
+    }
+}
+
+#[tokio::test]
+async fn frames_written_together_are_the_same_bytes_as_written_one_by_one() {
+    let bodies = vec![vec![1, 2, 3], vec![3u8; 10_000], vec![9]];
+    for threshold in [None, Some(64)] {
+        let mut wires = Vec::new();
+        for together in [true, false] {
+            let (a, mut b) = duplex(1 << 16);
+            let mut a = Connection::new(a, T);
+            a.set_compression(threshold);
+            if together {
+                a.write_frames(&bodies).await.unwrap();
+            } else {
+                for body in &bodies {
+                    a.write_frame(body).await.unwrap();
+                }
+            }
+            // the connection owns its end; dropping it lets the other side read to the end
+            drop(a);
+            let mut wire = Vec::new();
+            b.read_to_end(&mut wire).await.unwrap();
+            wires.push(wire);
+        }
+        assert_eq!(wires[0], wires[1]);
+    }
+}
+
+#[tokio::test]
 async fn the_handshake_picks_the_next_state() {
     for (next, state) in [(1, State::Status), (2, State::Login), (3, State::Login)] {
         let (a, b) = duplex(1024);

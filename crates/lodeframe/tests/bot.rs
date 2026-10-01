@@ -2,16 +2,10 @@
 //! Bots play on a real server over TCP: they see each other, walk, chat, and place and break
 //! blocks.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::time::Duration;
 
 use lodeframe::{
     chunk::FlatGenerator,
-    clock::SystemClock,
-    configuration,
-    instance::{self, InstanceHandle},
-    login,
-    net::{Config, serve},
-    play,
     protocol::{
         BlockPos, Direction, Vec3,
         block::{AIR, STONE},
@@ -21,10 +15,10 @@ use lodeframe::{
         },
     },
     registry::Registries,
+    server::{RunningServer, Server},
     world::World,
 };
-use lodeframe_bot::{Bot, ChatLine, Frame};
-use tokio::net::TcpListener;
+use lodeframe_bot::{Bot, ChatLine, Frame, spread_position};
 
 /// How long a bot waits for one packet. Generous: this only bounds a failing test.
 const WAIT: Duration = Duration::from_secs(10);
@@ -32,35 +26,17 @@ const WAIT: Duration = Duration::from_secs(10);
 /// The top layer of the flat world: grass at y = -61, air above it.
 const GROUND: BlockPos = BlockPos::new(0, -61, 0);
 
-/// A server on a free port with a flat world that has the usual connection path:
-/// login, configuration, play.
-// ponytail: the same wiring is in examples/offline_login.rs; M1-17 designs the start-up API
-async fn start() -> (SocketAddr, InstanceHandle) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let registries = Arc::new(Registries::vanilla());
-    let world_registries = registries.clone();
-    let lobby = instance::spawn("lobby", SystemClock, move || {
-        let mut world = World::new(&world_registries, FlatGenerator::default());
-        // few chunks, so that a debug build joins quickly
-        world.view_distance = 2;
-        world
-    })
-    .unwrap();
-    let handle = lobby.clone();
-    tokio::spawn(serve(
-        listener,
-        Config::default(),
-        move |mut conn, _intention| {
-            let (registries, lobby) = (registries.clone(), lobby.clone());
-            async move {
-                let profile = login::offline(&mut conn, Some(256)).await?;
-                configuration::run(&mut conn, &registries).await?;
-                play::run(conn, profile, lobby).await
-            }
-        },
-    ));
-    (addr, handle)
+/// A server on a free port with a flat world.
+async fn start() -> RunningServer {
+    Server::new("127.0.0.1:0")
+        .start(|registries: &Registries| {
+            let mut world = World::new(registries, FlatGenerator::default());
+            // few chunks, so that a debug build joins quickly
+            world.view_distance = 2;
+            world
+        })
+        .await
+        .unwrap()
 }
 
 fn entity_added(id: i32) -> impl FnMut(&Frame) -> Option<AddEntity> {
@@ -107,7 +83,8 @@ fn said(name: &'static str, text: &'static str) -> impl FnMut(&Frame) -> Option<
 
 #[tokio::test(flavor = "multi_thread")]
 async fn two_bots_see_each_other_walk_chat_and_edit_blocks() {
-    let (addr, server) = start().await;
+    let server = start().await;
+    let addr = server.addr();
     let mut alice = Bot::connect(addr, "Alice").await.unwrap();
     let mut bob = Bot::connect(addr, "Bob").await.unwrap();
     let (alice_id, bob_id) = (alice.entity_id(), bob.entity_id());
@@ -204,7 +181,8 @@ async fn two_bots_see_each_other_walk_chat_and_edit_blocks() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn bots_that_wander_are_kept_for_the_whole_run() {
-    let (addr, server) = start().await;
+    let server = start().await;
+    let addr = server.addr();
     let mut bots = Vec::new();
     for index in 0..3 {
         bots.push(tokio::spawn(async move {
@@ -218,6 +196,49 @@ async fn bots_that_wander_are_kept_for_the_whole_run() {
         // at least the join, and the others' walking
         assert!(received > 10, "only {received} packets");
     }
+
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bot_out_of_sight_is_removed_and_its_moves_do_not_arrive_but_its_chat_does() {
+    let server = start().await;
+    let mut alice = Bot::connect(server.addr(), "Alice").await.unwrap();
+    let mut bob = Bot::connect(server.addr(), "Bob").await.unwrap();
+    let bob_id = bob.entity_id();
+    alice.recv_until(WAIT, entity_added(bob_id)).await.unwrap();
+
+    // four chunks away, with a view distance of 2: out of sight
+    let far = spread_position(1, 4);
+    bob.move_to(far).await.unwrap();
+    alice
+        .recv_until(WAIT, |f| {
+            let gone = f
+                .decode::<RemoveEntities>()
+                .ok()
+                .filter(|_| f.is::<RemoveEntities>())?;
+            gone.entity_ids.iter().any(|e| e.0 == bob_id).then_some(())
+        })
+        .await
+        .unwrap();
+
+    // what Bob does there does not reach Alice, but what he says does
+    bob.move_to(far + Vec3::new(1.0, 0.0, 0.0)).await.unwrap();
+    bob.chat("can you hear me").await.unwrap();
+    let heard = alice
+        .recv_until(WAIT, |f| {
+            assert!(
+                !f.is::<EntityPositionSync>(),
+                "a move arrived from out of sight"
+            );
+            f.chat_line()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        (heard.name.as_str(), heard.text.as_str()),
+        ("Bob", "can you hear me")
+    );
 
     server.stop();
 }

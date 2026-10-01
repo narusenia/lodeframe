@@ -9,7 +9,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
     time::Duration,
@@ -109,17 +109,27 @@ impl Sessions {
 pub struct Runner<I> {
     instance: I,
     inbox: mpsc::Receiver<Message>,
+    metrics: Arc<TickMetrics>,
 }
 
 impl<I: Instance> Runner<I> {
     /// Wraps `instance` with an inbox. Also returns the handle to send to it.
     pub fn new(instance: I) -> (Self, InstanceHandle) {
         let (tx, inbox) = mpsc::channel(INBOX);
+        let metrics = Arc::new(TickMetrics::default());
         let handle = InstanceHandle {
             inbox: tx,
             stop: Arc::new(AtomicBool::new(false)),
+            metrics: metrics.clone(),
         };
-        (Self { instance, inbox }, handle)
+        (
+            Self {
+                instance,
+                inbox,
+                metrics,
+            },
+            handle,
+        )
     }
 
     /// One step: hands every waiting message to the instance, then ticks it.
@@ -136,6 +146,13 @@ impl<I: Instance> Runner<I> {
         }
         self.instance.tick();
         true
+    }
+
+    fn record(&self, busy: Duration) {
+        let ns = u64::try_from(busy.as_nanos()).unwrap_or(u64::MAX);
+        self.metrics.ticks.fetch_add(1, Ordering::Relaxed);
+        self.metrics.busy_ns.fetch_add(ns, Ordering::Relaxed);
+        self.metrics.busy_max_ns.fetch_max(ns, Ordering::Relaxed);
     }
 
     /// Ticks every [`TICK`] until `stop` is set or all handles are gone.
@@ -159,7 +176,10 @@ impl<I: Instance> Runner<I> {
                 );
                 next = now;
                 reported = true;
+                self.metrics.skipped.fetch_add(1, Ordering::Relaxed);
+                self.metrics.late.fetch_add(1, Ordering::Relaxed);
             } else if behind >= TICK {
+                self.metrics.late.fetch_add(1, Ordering::Relaxed);
                 // one warning per stretch of lag; the rest of the stretch is debug
                 if reported {
                     tracing::debug!(behind_ms = behind.as_millis() as u64, "tick behind");
@@ -173,9 +193,11 @@ impl<I: Instance> Runner<I> {
             } else {
                 reported = false;
             }
+            let started = clock.now();
             if !self.step() {
                 break;
             }
+            self.record(clock.now().saturating_duration_since(started));
             next += TICK;
         }
     }
@@ -186,6 +208,35 @@ impl<I: Instance> Runner<I> {
 pub struct InstanceHandle {
     inbox: mpsc::Sender<Message>,
     stop: Arc<AtomicBool>,
+    metrics: Arc<TickMetrics>,
+}
+
+/// How the tick loop has been doing since it started, from [`InstanceHandle::tick_stats`].
+///
+/// The numbers only grow. To see a stretch of time, take two samples and subtract; for the
+/// ticks per second, divide the ticks between them by the seconds between them. The maximum is
+/// the largest since the start and cannot be subtracted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TickStats {
+    /// Ticks run.
+    pub ticks: u64,
+    /// Time spent inside ticks, handling messages and ticking the instance.
+    pub busy: Duration,
+    /// The longest a single tick took.
+    pub busy_max: Duration,
+    /// Ticks that started at least one tick (50 ms) after they were due.
+    pub late: u64,
+    /// Times the loop was so far behind ([`MAX_BEHIND`]) that it gave up catching up.
+    pub skipped: u64,
+}
+
+#[derive(Debug, Default)]
+struct TickMetrics {
+    ticks: AtomicU64,
+    busy_ns: AtomicU64,
+    busy_max_ns: AtomicU64,
+    late: AtomicU64,
+    skipped: AtomicU64,
 }
 
 impl InstanceHandle {
@@ -200,6 +251,19 @@ impl InstanceHandle {
     /// Asks the instance thread to stop after its current tick.
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
+    }
+
+    /// How the tick loop has been doing, see [`TickStats`]. Only [`Runner::run`] counts; a
+    /// runner driven by hand through [`Runner::step`] does not.
+    pub fn tick_stats(&self) -> TickStats {
+        let m = &self.metrics;
+        TickStats {
+            ticks: m.ticks.load(Ordering::Relaxed),
+            busy: Duration::from_nanos(m.busy_ns.load(Ordering::Relaxed)),
+            busy_max: Duration::from_nanos(m.busy_max_ns.load(Ordering::Relaxed)),
+            late: m.late.load(Ordering::Relaxed),
+            skipped: m.skipped.load(Ordering::Relaxed),
+        }
     }
 }
 

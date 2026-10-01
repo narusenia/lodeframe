@@ -83,6 +83,17 @@ impl Frame {
     }
 }
 
+impl Frame {
+    /// The text, if this is a `SystemChat` that is not above the hotbar.
+    pub fn system_message(&self) -> Option<String> {
+        if self.id != ids::play::clientbound::SYSTEM_CHAT {
+            return None;
+        }
+        let raw = RawSystemChat::decode(&mut self.payload.as_slice()).ok()?;
+        (!raw.overlay).then(|| plain_text(&raw.content))
+    }
+}
+
 /// What a player said, as the bot sees it: the sender's name and the text, without styles.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatLine {
@@ -105,6 +116,14 @@ struct RawChat {
     target_name: Option<Nbt>,
 }
 
+/// A `SystemChat` as it is on the wire.
+#[derive(Decode)]
+#[lodeframe(crate = lodeframe_protocol)]
+struct RawSystemChat {
+    content: Nbt,
+    overlay: bool,
+}
+
 /// The text of a component: a bare string, or the `text` of a compound. Children are left out.
 fn plain_text(nbt: &Nbt) -> String {
     match nbt {
@@ -115,6 +134,19 @@ fn plain_text(nbt: &Nbt) -> String {
         },
         _ => String::new(),
     }
+}
+
+/// Where bot `index` stands when the bots are spread out: on a grid, `spacing` chunks apart, 32 to
+/// a row, starting at the spawn, in the middle of a chunk so that the walk stays inside it.
+///
+/// With a `spacing` larger than the server's entity view distance no two bots see each other.
+pub fn spread_position(index: u32, spacing: u32) -> Vec3 {
+    let step = f64::from(spacing) * 16.0;
+    Vec3::new(
+        f64::from(index % 32) * step + 8.5,
+        -60.0,
+        f64::from(index / 32) * step + 8.5,
+    )
 }
 
 /// A logged-in player. Everything it does goes over the connection `S`.
@@ -366,7 +398,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Bot<S> {
     pub async fn wander(&mut self, index: u32, duration: Duration) -> Result<()> {
         let start = Instant::now();
         let home = self.position;
-        let spot = BlockPos::new((index % 64) as i32, -61, 8);
+        // its own column, a few blocks from where it walks
+        let spot = BlockPos::new(
+            home.x.floor() as i32 + (index % 64) as i32,
+            -61,
+            home.z.floor() as i32 + 8,
+        );
         let mut tick = interval(Duration::from_millis(50));
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut step = 0u32;
@@ -517,5 +554,39 @@ mod tests {
             payload: Vec::new(),
         };
         assert_eq!(other.chat_line(), None);
+    }
+
+    #[test]
+    fn spread_bots_stand_in_their_own_chunks_beyond_each_others_sight() {
+        let chunk = |p: Vec3| ((p.x.floor() as i32) >> 4, (p.z.floor() as i32) >> 4);
+        let spacing = 4u32;
+        let spots: Vec<_> = (0..70)
+            .map(|i| chunk(spread_position(i, spacing)))
+            .collect();
+        for (i, a) in spots.iter().enumerate() {
+            for b in &spots[i + 1..] {
+                let apart = a.0.abs_diff(b.0).max(a.1.abs_diff(b.1));
+                assert!(apart >= spacing, "{a:?} and {b:?} are {apart} chunks apart");
+            }
+        }
+        // and the walk of 3 blocks around it stays in the chunk
+        let p = spread_position(5, spacing);
+        assert_eq!(chunk(p + Vec3::new(3.0, 0.0, 3.0)), chunk(p));
+        assert_eq!(chunk(p - Vec3::new(3.0, 0.0, 3.0)), chunk(p));
+    }
+
+    #[test]
+    fn a_system_message_is_read_unless_it_is_an_overlay() {
+        let frame = |overlay: bool| {
+            let mut payload = Vec::new();
+            Nbt::from("welcome").encode(&mut payload).unwrap();
+            payload.push(u8::from(overlay));
+            Frame {
+                id: ids::play::clientbound::SYSTEM_CHAT,
+                payload,
+            }
+        };
+        assert_eq!(frame(false).system_message().as_deref(), Some("welcome"));
+        assert_eq!(frame(true).system_message(), None);
     }
 }

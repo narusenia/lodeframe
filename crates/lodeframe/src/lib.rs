@@ -12,6 +12,7 @@ pub mod login;
 pub mod net;
 pub mod play;
 pub mod registry;
+pub mod server;
 pub mod status;
 #[cfg(feature = "test-util")]
 pub mod test_util;
