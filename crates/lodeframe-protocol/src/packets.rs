@@ -484,6 +484,66 @@ pub mod play {
         ((degrees * 256.0 / 360.0).floor() as i32) as u8
     }
 
+    /// How many units of the offsets in [`MoveEntityPos`] and [`MoveEntityPosRot`] make a block.
+    pub const MOVE_UNITS_PER_BLOCK: f64 = 4096.0;
+
+    /// An entity moved a little: by `dx`, `dy`, `dz` units of 1/4096 block from where the client
+    /// last had it. Larger moves need [`EntityPositionSync`].
+    ///
+    /// On the wire the flags byte after the entity is a bit set, of which this sends only bit 0,
+    /// on the ground.
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::MOVE_ENTITY_POS, state = Play, side = Clientbound)]
+    pub struct MoveEntityPos {
+        /// The entity.
+        pub entity_id: VarInt,
+        /// Whether it is on the ground.
+        pub on_ground: bool,
+        /// Offset in x.
+        pub dx: i16,
+        /// Offset in y.
+        pub dy: i16,
+        /// Offset in z.
+        pub dz: i16,
+    }
+
+    /// Like [`MoveEntityPos`], and the entity turned: `yaw` and `pitch` are as in [`angle`].
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::MOVE_ENTITY_POS_ROT, state = Play, side = Clientbound)]
+    pub struct MoveEntityPosRot {
+        /// The entity.
+        pub entity_id: VarInt,
+        /// Whether it is on the ground.
+        pub on_ground: bool,
+        /// Offset in x.
+        pub dx: i16,
+        /// Offset in y.
+        pub dy: i16,
+        /// Offset in z.
+        pub dz: i16,
+        /// See [`angle`]. Comes first on the wire.
+        pub yaw: u8,
+        /// See [`angle`].
+        pub pitch: u8,
+    }
+
+    /// An entity turned without moving. The head turns with [`RotateHead`].
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::MOVE_ENTITY_ROT, state = Play, side = Clientbound)]
+    pub struct MoveEntityRot {
+        /// The entity.
+        pub entity_id: VarInt,
+        /// Whether it is on the ground.
+        pub on_ground: bool,
+        /// See [`angle`].
+        pub yaw: u8,
+        /// See [`angle`].
+        pub pitch: u8,
+    }
+
     /// Makes an entity appear.
     #[derive(Debug, Clone, PartialEq, Encode, Decode, Packet)]
     #[lodeframe(crate = crate)]
@@ -1088,5 +1148,54 @@ mod tests {
         .encode(&mut buf)
         .unwrap();
         assert_eq!(buf, [0xac, 0x02]);
+    }
+
+    #[test]
+    fn relative_move_packets_match_the_vanilla_encoding() {
+        // all from the 26.3 codecs: entity 300, offsets (4096, -4096, 1), angles 64 and -32
+        let pos = MoveEntityPos {
+            entity_id: VarInt(300),
+            on_ground: true,
+            dx: 4096,
+            dy: -4096,
+            dz: 1,
+        };
+        let mut buf = Vec::new();
+        pos.encode(&mut buf).unwrap();
+        assert_eq!(buf, [0xac, 0x02, 0x01, 0x10, 0x00, 0xf0, 0x00, 0x00, 0x01]);
+        assert_eq!(MoveEntityPos::decode(&mut buf.as_slice()).unwrap(), pos);
+
+        let pos_rot = MoveEntityPosRot {
+            entity_id: VarInt(300),
+            on_ground: false,
+            dx: 4096,
+            dy: -4096,
+            dz: 1,
+            yaw: 64,
+            pitch: 0xe0,
+        };
+        let mut buf = Vec::new();
+        pos_rot.encode(&mut buf).unwrap();
+        assert_eq!(
+            buf,
+            [
+                0xac, 0x02, 0x00, 0x10, 0x00, 0xf0, 0x00, 0x00, 0x01, 0x40, 0xe0
+            ]
+        );
+        assert_eq!(
+            MoveEntityPosRot::decode(&mut buf.as_slice()).unwrap(),
+            pos_rot
+        );
+
+        let rot = MoveEntityRot {
+            entity_id: VarInt(300),
+            on_ground: true,
+            yaw: 64,
+            pitch: 0xe0,
+        };
+        let mut buf = Vec::new();
+        rot.encode(&mut buf).unwrap();
+        assert_eq!(buf, [0xac, 0x02, 0x01, 0x40, 0xe0]);
+        assert_eq!(MoveEntityRot::decode(&mut buf.as_slice()).unwrap(), rot);
     }
 }
