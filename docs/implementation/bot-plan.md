@@ -27,7 +27,7 @@ lib + bin。依存は `lodeframe-protocol` と tokio・tracing だけ。**本体
 - `bot.recv()` / `bot.recv_until(timeout, f)`: 次のパケット（`Frame`: id と `decode::<P>()`）を返す。keepalive には中で答える。タイムアウトは必須（待ち続けて CI を止めない）
 - `bot.move_to(pos)` / `chat(text)` / `dig(pos)` / `place(pos, face)`: 操作。`dig` と `place` は sequence を自動で振り、返す
 - `ChatLine { name, text }`: 受け取った `DisguisedChat` を読んだもの
-- `wander(bot, duration)`: 負荷用。円を描いて歩き、ときどきチャットし、自分の足元の脇に置いて壊す。受信を止めない
+- `bot.wander(index, duration)`: 負荷用。`index` はボットごとの位相と建てる列を分ける。円を描いて歩き、ときどきチャットし、自分の足元の脇に置いて壊す。受信を止めない
 
 bin は `lodeframe-bot --addr <addr> --count <N> --seconds <S>`。N 体を少しずつずらして接続し、S 秒歩かせ、接続できた数・できなかった数・受け取ったパケット数を出す。引数の解析は標準ライブラリで足りるので `clap` は入れない。
 
