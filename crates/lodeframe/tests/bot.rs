@@ -10,8 +10,8 @@ use lodeframe::{
         BlockPos, Direction, Vec3,
         block::{AIR, STONE},
         packets::play::{
-            AddEntity, BlockChangedAck, BlockUpdate, EntityPositionSync, PlayerInfoAdd,
-            PlayerInfoRemove, RemoveEntities,
+            AddEntity, BlockChangedAck, BlockUpdate, EntityPositionSync, MoveEntityPos,
+            PlayerInfoAdd, PlayerInfoRemove, RemoveEntities,
         },
     },
     registry::Registries,
@@ -108,17 +108,19 @@ async fn two_bots_see_each_other_walk_chat_and_edit_blocks() {
     // a walk shows up for the other one
     let there = Vec3::new(5.5, -60.0, 0.5);
     alice.move_to(there).await.unwrap();
-    let synced = bob
+    let moved = bob
         .recv_until(WAIT, |f| {
-            let sync = f
-                .decode::<EntityPositionSync>()
+            let step = f
+                .decode::<MoveEntityPos>()
                 .ok()
-                .filter(|_| f.is::<EntityPositionSync>())?;
-            (sync.entity_id.0 == alice_id && sync.position == there).then_some(sync)
+                .filter(|_| f.is::<MoveEntityPos>())?;
+            (step.entity_id.0 == alice_id).then_some(step)
         })
         .await
         .unwrap();
-    assert!(synced.on_ground);
+    // five blocks along x from the spawn, at 4096 to a block
+    assert_eq!((moved.dx, moved.dy, moved.dz), (5 * 4096, 0, 0));
+    assert!(moved.on_ground);
 
     // a chat line reaches both, the sender too
     alice.chat("hello").await.unwrap();
@@ -228,7 +230,7 @@ async fn a_bot_out_of_sight_is_removed_and_its_moves_do_not_arrive_but_its_chat_
     let heard = alice
         .recv_until(WAIT, |f| {
             assert!(
-                !f.is::<EntityPositionSync>(),
+                !f.is::<MoveEntityPos>() && !f.is::<EntityPositionSync>(),
                 "a move arrived from out of sight"
             );
             f.chat_line()

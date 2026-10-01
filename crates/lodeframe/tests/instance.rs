@@ -280,6 +280,28 @@ async fn a_player_who_stops_reading_is_dropped_and_the_others_carry_on() {
     assert!(slow_rx.recv().await.is_none());
 }
 
+#[tokio::test]
+async fn a_group_of_packets_takes_one_place_in_the_queue_and_arrives_in_order() {
+    let mut sessions = Sessions::default();
+    let (tx, mut rx) = mpsc::channel(OUTBOX);
+    sessions.join(Uuid(1), tx);
+
+    // OUTBOX messages of 100 packets each fit: the queue counts messages, not packets
+    for round in 0..OUTBOX {
+        let group: Vec<Vec<u8>> = (0..100).map(|i| vec![round as u8, i]).collect();
+        assert!(sessions.send_all(Uuid(1), group));
+    }
+    let first = rx.recv().await.unwrap();
+    assert_eq!(first.len(), 100);
+    assert_eq!(first[0], [0, 0]);
+    assert_eq!(first[99], [0, 99]);
+
+    // one place is free now; the next message after it is the one that overflows
+    assert!(sessions.send_all(Uuid(1), vec![vec![1]; 100]));
+    assert!(!sessions.send_all(Uuid(1), vec![vec![1]]));
+    assert_eq!(sessions.len(), 0);
+}
+
 /// Records what reaches it and answers every packet with its own body.
 struct Echo {
     sessions: Sessions,

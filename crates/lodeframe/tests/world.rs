@@ -10,10 +10,10 @@ use lodeframe::{
         ids::play::{clientbound as out, serverbound},
         packets::play::{
             AddEntity, BlockChangedAck, BlockUpdate, Chat, ChunkBatchFinished, DisguisedChat,
-            EntityPositionSync, FLAG_SNEAKING, ForgetLevelChunk, INPUT_SNEAK, Login, MovePlayerPos,
-            MovePlayerPosRot, MovePlayerRot, PlayerAction, PlayerInfoAdd, PlayerInfoRemove,
-            PlayerInput, PlayerPosition, RemoveEntities, RotateHead, SetChunkCacheCenter,
-            SetEntityFlagsAndPose, SystemChat, UseItemOn,
+            EntityPositionSync, FLAG_SNEAKING, ForgetLevelChunk, INPUT_SNEAK, Login, MoveEntityPos,
+            MoveEntityPosRot, MovePlayerPos, MovePlayerPosRot, MovePlayerRot, PlayerAction,
+            PlayerInfoAdd, PlayerInfoRemove, PlayerInput, PlayerPosition, RemoveEntities,
+            RotateHead, SetChunkCacheCenter, SetEntityFlagsAndPose, SystemChat, UseItemOn,
         },
     },
     registry::Registries,
@@ -151,7 +151,7 @@ fn tab_list_entries_are_removed_on_leave() {
 }
 
 #[test]
-fn movement_look_and_sneaking_reach_the_other_player_only() {
+fn a_move_reaches_the_others_at_the_next_tick_as_an_offset() {
     let mut env = env();
     let mut steve = env.connect("Steve");
     let mut alex = env.connect("Alex");
@@ -167,26 +167,65 @@ fn movement_look_and_sneaking_reach_the_other_player_only() {
             flags: 1,
         },
     );
-    let sync: Vec<EntityPositionSync> = steve.drain_as();
-    assert_eq!(sync.len(), 1);
-    assert_eq!(sync[0].position, Vec3::new(3.5, -60.0, 0.5));
-    assert_eq!((sync[0].yaw, sync[0].pitch), (90.0, 10.0));
+    assert!(steve.drain().is_empty(), "told at the tick, not on arrival");
+    env.tick(1);
+
+    let told = steve.drain();
+    let moved: MoveEntityPosRot = told
+        .iter()
+        .find(|r| r.is::<MoveEntityPosRot>())
+        .unwrap()
+        .decode()
+        .unwrap();
+    // 3 blocks along x from the spawn at 4096 to a block; 90 degrees is 64 and 10 is 7
+    let expected = MoveEntityPosRot {
+        entity_id: VarInt(2),
+        on_ground: true,
+        dx: 12288,
+        dy: 0,
+        dz: 0,
+        yaw: 64,
+        pitch: 7,
+    };
+    assert_eq!(moved, expected);
+    let head: RotateHead = told
+        .iter()
+        .find(|r| r.is::<RotateHead>())
+        .unwrap()
+        .decode()
+        .unwrap();
+    assert_eq!(head.head_yaw, 64);
     assert!(
         alex.drain().is_empty(),
         "the mover is not told about themselves"
     );
+}
 
-    // the head follows the yaw
+#[test]
+fn moving_and_turning_have_their_own_packets_and_the_head_follows_only_the_yaw() {
+    let (mut env, mut steve, alex) = two_players();
+    let mut told = |env: &mut TestEnv<World<FlatGenerator>>| {
+        env.tick(1);
+        steve.drain()
+    };
+
+    env.send(&alex, &walk(4.5));
+    let moved = told(&mut env);
+    assert_eq!(count(&moved, out::MOVE_ENTITY_POS), 1);
+    assert_eq!(count(&moved, out::ROTATE_HEAD), 0, "the yaw did not change");
+
     env.send(
         &alex,
         &MovePlayerRot {
             yaw: 180.0,
-            pitch: 10.0,
+            pitch: 0.0,
             flags: 1,
         },
     );
-    let packets = steve.drain();
-    let head: RotateHead = packets
+    let turned = told(&mut env);
+    assert_eq!(count(&turned, out::MOVE_ENTITY_ROT), 1);
+    assert_eq!(count(&turned, out::MOVE_ENTITY_POS), 0);
+    let head: RotateHead = turned
         .iter()
         .find(|r| r.is::<RotateHead>())
         .unwrap()
@@ -194,16 +233,36 @@ fn movement_look_and_sneaking_reach_the_other_player_only() {
         .unwrap();
     assert_eq!(head.head_yaw, 128);
 
+    // looking up or down turns the body, not the head
+    env.send(
+        &alex,
+        &MovePlayerRot {
+            yaw: 180.0,
+            pitch: 45.0,
+            flags: 1,
+        },
+    );
+    let nodded = told(&mut env);
+    assert_eq!(count(&nodded, out::MOVE_ENTITY_ROT), 1);
+    assert_eq!(count(&nodded, out::ROTATE_HEAD), 0);
+
     // a move that changes nothing is not repeated
     env.send(
         &alex,
         &MovePlayerRot {
             yaw: 180.0,
-            pitch: 10.0,
+            pitch: 45.0,
             flags: 1,
         },
     );
-    assert!(steve.drain().is_empty());
+    assert!(told(&mut env).is_empty());
+    // and a tick with nobody having moved sends nothing
+    assert!(told(&mut env).is_empty());
+}
+
+#[test]
+fn sneaking_is_told_at_once() {
+    let (mut env, mut steve, alex) = two_players();
 
     env.send(&alex, &PlayerInput { flags: INPUT_SNEAK });
     let crouch: Vec<SetEntityFlagsAndPose> = steve.drain_as();
@@ -213,6 +272,108 @@ fn movement_look_and_sneaking_reach_the_other_player_only() {
     env.send(&alex, &PlayerInput { flags: 0 });
     let stand: Vec<SetEntityFlagsAndPose> = steve.drain_as();
     assert_eq!((stand[0].flags, stand[0].pose.0), (0, 0));
+}
+
+#[test]
+fn several_moves_in_a_tick_are_one_offset_to_the_last_place() {
+    let (mut env, mut steve, alex) = two_players();
+
+    for x in [1.5, 2.5, 3.5] {
+        env.send(&alex, &walk(x));
+    }
+    env.tick(1);
+
+    let moves: Vec<MoveEntityPos> = steve.drain_as();
+    assert_eq!(moves.len(), 1);
+    assert_eq!(moves[0].dx, 3 * 4096);
+}
+
+#[test]
+fn a_move_of_eight_blocks_or_more_is_said_as_a_place() {
+    let (mut env, mut steve, alex) = two_players();
+
+    env.send(&alex, &walk(20.5));
+    env.tick(1);
+
+    let told = steve.drain();
+    let sync: EntityPositionSync = told
+        .iter()
+        .find(|r| r.is::<EntityPositionSync>())
+        .unwrap()
+        .decode()
+        .unwrap();
+    assert_eq!(sync.position, Vec3::new(20.5, -60.0, 0.5));
+    assert_eq!(count(&told, out::ROTATE_HEAD), 1);
+    assert_eq!(count(&told, out::MOVE_ENTITY_POS), 0);
+    // the next small step is an offset from there
+    env.send(&alex, &walk(21.5));
+    env.tick(1);
+    let step: Vec<MoveEntityPos> = steve.drain_as();
+    assert_eq!(step.len(), 1);
+    assert_eq!(step[0].dx, 4096);
+}
+
+#[test]
+fn offsets_do_not_add_up_to_a_drift() {
+    let (mut env, mut steve, alex) = two_players();
+    // 0.001 of a block is 4.096 units: rounding each step alone would lose 0.096 of a unit a time
+    let mut seen = 0.5;
+    for i in 1..=300 {
+        env.send(&alex, &walk(0.5 + 0.001 * f64::from(i)));
+        env.tick(1);
+        for step in steve.drain_as::<MoveEntityPos>() {
+            seen += f64::from(step.dx) / 4096.0;
+        }
+    }
+    assert!((seen - 0.8).abs() <= 1.0 / 4096.0, "seen {seen}");
+}
+
+#[test]
+fn a_player_who_comes_into_view_is_spawned_where_the_others_have_them_and_catches_up() {
+    let (mut env, _steve, alex) = two_players();
+    // Alex has moved, but the others have not been told yet
+    env.send(&alex, &walk(5.5));
+
+    let mut dave = env.connect("Dave");
+    let spawned: AddEntity = dave
+        .drain()
+        .iter()
+        .find(|r| r.is::<AddEntity>())
+        .unwrap()
+        .decode()
+        .unwrap();
+    assert_eq!(spawned.position, Vec3::new(0.5, -60.0, 0.5));
+
+    env.tick(1);
+
+    let steps: Vec<MoveEntityPos> = dave.drain_as();
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].dx, 5 * 4096);
+}
+
+#[test]
+fn the_moves_of_a_tick_arrive_as_one_message_for_each_viewer() {
+    let mut env = env();
+    let mut steve = env.connect("Steve");
+    let mut alex = env.connect("Alex");
+    let mut dave = env.connect("Dave");
+    steve.drain();
+    alex.drain();
+    dave.drain();
+
+    env.send(&alex, &walk(2.5));
+    env.send(&dave, &walk(3.5));
+    env.tick(1);
+
+    // Steve sees both of them move, in one message; each of the two sees the other
+    let messages = steve.drain_messages();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(count(&messages[0], out::MOVE_ENTITY_POS), 2);
+    for mover in [&mut alex, &mut dave] {
+        let messages = mover.drain_messages();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(count(&messages[0], out::MOVE_ENTITY_POS), 1);
+    }
 }
 
 fn say(env: &mut TestEnv<World<FlatGenerator>>, who: &FakePlayer, text: &str) {
@@ -910,6 +1071,7 @@ fn walking_out_of_sight_removes_the_entity_and_coming_back_spawns_it_where_it_st
 
     // Alex moves within the chunk they are in; then Steve comes back
     env.send(&alex, &walk(10.5));
+    env.tick(1);
     assert!(steve.drain().is_empty());
     env.send(&steve, &walk(0.5));
 
@@ -1031,4 +1193,48 @@ fn the_entity_view_distance_sets_how_far_players_see_each_other() {
     // one chunk away: in sight again
     env.send(&steve, &walk(16.5));
     assert_eq!(count(&steve.drain(), out::ADD_ENTITY), 1);
+}
+
+#[test]
+fn a_crowd_in_view_is_spawned_in_one_message() {
+    let mut env = env();
+    let _crowd: Vec<FakePlayer> = ["A", "B", "C", "D"].map(|n| env.connect(n)).into();
+    let mut newcomer = env.connect("Newcomer");
+
+    let messages = newcomer.drain_messages();
+
+    // the four entities arrive together, so a crowd cannot fill the queue of a connection
+    let with_entities: Vec<&Vec<Received>> = messages
+        .iter()
+        .filter(|m| m.iter().any(|r| r.is::<AddEntity>()))
+        .collect();
+    assert_eq!(with_entities.len(), 1);
+    assert_eq!(count(with_entities[0], out::ADD_ENTITY), 4);
+}
+
+#[test]
+fn walking_away_from_and_back_to_a_crowd_is_one_message_each_way() {
+    let mut env = env();
+    let mut steve = env.connect("Steve");
+    let _crowd: Vec<FakePlayer> = ["A", "B", "C"].map(|n| env.connect(n)).into();
+    steve.drain();
+
+    env.send(&steve, &walk(FAR));
+    let away = steve.drain_messages();
+    let removals: Vec<&Received> = away
+        .iter()
+        .flatten()
+        .filter(|r| r.is::<RemoveEntities>())
+        .collect();
+    assert_eq!(removals.len(), 1);
+    assert_eq!(removed_entities(&[removals[0].clone()]).len(), 3);
+
+    env.send(&steve, &walk(0.5));
+    let back = steve.drain_messages();
+    let with_entities: Vec<&Vec<Received>> = back
+        .iter()
+        .filter(|m| m.iter().any(|r| r.is::<AddEntity>()))
+        .collect();
+    assert_eq!(with_entities.len(), 1);
+    assert_eq!(count(with_entities[0], out::ADD_ENTITY), 3);
 }

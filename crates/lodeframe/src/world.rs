@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::{
     chunk::{ChunkLoader, ChunkPos, ChunkTracker, Chunks, HEIGHT, MIN_Y},
     event::{Event, EventNode},
-    instance::{Instance, Message, Sessions},
+    instance::{Instance, Message, Packets, Sessions},
     login::Profile,
     protocol::{
         BlockPos, BlockState, Decode, Direction, Identifier, Packet, Result, Uuid, VarInt, Vec3,
@@ -17,10 +17,11 @@ use crate::{
             ACTION_START_DESTROY_BLOCK, AddEntity, BlockChangedAck, BlockUpdate, Chat,
             ChunkBatchFinished, ChunkBatchStart, DisguisedChat, EntityPositionSync, FLAG_SNEAKING,
             ForgetLevelChunk, GameEvent, INPUT_SNEAK, LEVEL_CHUNKS_LOAD_START, Login,
-            MovePlayerPos, MovePlayerPosRot, MovePlayerRot, MovePlayerStatusOnly, ON_GROUND,
-            POSE_CROUCHING, PlayerAction, PlayerInfo, PlayerInfoAdd, PlayerInfoRemove, PlayerInput,
-            PlayerPosition, RemoveEntities, RotateHead, SetChunkCacheCenter, SetEntityFlagsAndPose,
-            SpawnInfo, SystemChat, UseItemOn, angle,
+            MOVE_UNITS_PER_BLOCK, MoveEntityPos, MoveEntityPosRot, MoveEntityRot, MovePlayerPos,
+            MovePlayerPosRot, MovePlayerRot, MovePlayerStatusOnly, ON_GROUND, POSE_CROUCHING,
+            PlayerAction, PlayerInfo, PlayerInfoAdd, PlayerInfoRemove, PlayerInput, PlayerPosition,
+            RemoveEntities, RotateHead, SetChunkCacheCenter, SetEntityFlagsAndPose, SpawnInfo,
+            SystemChat, UseItemOn, angle,
         },
         split_packet_id,
     },
@@ -188,6 +189,13 @@ struct Player {
     // the players this one can see, who can see this one: their entities are spawned for each
     // other. Moves and sneaking are sent to these only.
     visible: HashSet<Uuid>,
+    // where the clients of those players have this one: the position sums up the offsets they
+    // were sent, so it is a hair off `pos`, and never drifts since the next offset starts from it
+    known_pos: Vec3,
+    known_yaw: u8,
+    known_pitch: u8,
+    // whether this player is in `World::movers` waiting for the next tick to be sent
+    moved: bool,
 }
 
 impl Player {
@@ -211,16 +219,94 @@ impl Player {
         }
     }
 
+    /// The packets that bring the clients' picture of this player up to date, empty if nothing
+    /// they show has changed. Afterwards `known_*` is what the clients have.
+    fn catch_up(&mut self) -> Vec<Vec<u8>> {
+        let entity_id = VarInt(self.entity_id);
+        let (yaw, pitch) = (angle(self.yaw), angle(self.pitch));
+        let yaw_turned = yaw != self.known_yaw;
+        let turned = yaw_turned || pitch != self.known_pitch;
+        let offset = |now: f64, known: f64| ((now - known) * MOVE_UNITS_PER_BLOCK).round();
+        let d = [
+            offset(self.pos.x, self.known_pos.x),
+            offset(self.pos.y, self.known_pos.y),
+            offset(self.pos.z, self.known_pos.z),
+        ];
+        let moved = d.iter().any(|d| *d != 0.0);
+        if !moved && !turned {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        if d.iter().any(|d| d.abs() > f64::from(i16::MAX)) {
+            // too far for an offset: say where it is
+            out.push(packet_body(&EntityPositionSync {
+                entity_id,
+                path: 0,
+                position: self.pos,
+                yaw: self.yaw,
+                pitch: self.pitch,
+                on_ground: self.on_ground,
+            }));
+            out.push(packet_body(&RotateHead {
+                entity_id,
+                head_yaw: yaw,
+            }));
+            self.known_pos = self.pos;
+        } else {
+            let [dx, dy, dz] = d.map(|d| d as i16);
+            self.known_pos += Vec3::new(
+                f64::from(dx) / MOVE_UNITS_PER_BLOCK,
+                f64::from(dy) / MOVE_UNITS_PER_BLOCK,
+                f64::from(dz) / MOVE_UNITS_PER_BLOCK,
+            );
+            let on_ground = self.on_ground;
+            out.push(match (moved, turned) {
+                (true, false) => packet_body(&MoveEntityPos {
+                    entity_id,
+                    on_ground,
+                    dx,
+                    dy,
+                    dz,
+                }),
+                (true, true) => packet_body(&MoveEntityPosRot {
+                    entity_id,
+                    on_ground,
+                    dx,
+                    dy,
+                    dz,
+                    yaw,
+                    pitch,
+                }),
+                (false, _) => packet_body(&MoveEntityRot {
+                    entity_id,
+                    on_ground,
+                    yaw,
+                    pitch,
+                }),
+            });
+            // the head only turns with the body when the yaw changed
+            if yaw_turned {
+                out.push(packet_body(&RotateHead {
+                    entity_id,
+                    head_yaw: yaw,
+                }));
+            }
+        }
+        self.known_yaw = yaw;
+        self.known_pitch = pitch;
+        out.into_iter().flatten().collect()
+    }
+
     fn add_entity(&self, uuid: Uuid) -> AddEntity {
         AddEntity {
             entity_id: VarInt(self.entity_id),
             uuid,
             kind: PLAYER,
-            position: self.pos,
+            position: self.known_pos,
             velocity: 0,
-            pitch: angle(self.pitch),
-            yaw: angle(self.yaw),
-            head_yaw: angle(self.yaw),
+            pitch: self.known_pitch,
+            yaw: self.known_yaw,
+            head_yaw: self.known_yaw,
             data: VarInt(0),
         }
     }
@@ -252,6 +338,8 @@ pub struct World<L> {
     // the holder id of the chat type: the registry id plus one
     chat_type: i32,
     next_entity_id: i32,
+    // players who moved since the last tick, in the order they first did
+    movers: Vec<Uuid>,
     events: EventNode<World<L>>,
 }
 
@@ -278,6 +366,7 @@ impl<L: ChunkLoader + 'static> World<L> {
                 .expect("the chat type is in the registry") as i32
                 + 1,
             next_entity_id: 0,
+            movers: Vec::new(),
             events: EventNode::new(),
         }
     }
@@ -349,7 +438,7 @@ impl<L: ChunkLoader + 'static> World<L> {
         self.send_many(None, body);
     }
 
-    fn join(&mut self, profile: Profile, outbound: tokio::sync::mpsc::Sender<Vec<u8>>) {
+    fn join(&mut self, profile: Profile, outbound: tokio::sync::mpsc::Sender<Packets>) {
         let id = profile.uuid;
         self.sessions.join(id, outbound);
         self.next_entity_id += 1;
@@ -367,6 +456,10 @@ impl<L: ChunkLoader + 'static> World<L> {
             chunks: ChunkTracker::new(),
             pending: VecDeque::new(),
             visible: HashSet::new(),
+            known_pos: self.spawn,
+            known_yaw: 0,
+            known_pitch: 0,
+            moved: false,
         };
         if self.send_join(id, &player, entity_id).is_err() {
             self.sessions.leave(id);
@@ -392,11 +485,9 @@ impl<L: ChunkLoader + 'static> World<L> {
         self.players.insert(id, player);
         // the newcomer first: the list, then the players in view
         let shown = self.send(id, &PlayerInfoAdd::new(tab)).and_then(|()| {
-            near.iter().try_for_each(|n| {
-                self.show(id, *n)
-                    .then_some(())
-                    .ok_or(crate::protocol::Error::InvalidValue("player is gone"))
-            })
+            self.show_many(id, &near)
+                .then_some(())
+                .ok_or(crate::protocol::Error::InvalidValue("player is gone"))
         });
         if shown.is_err() {
             // nobody else has heard of the player, so there is nothing to take back
@@ -597,26 +688,9 @@ impl<L: ChunkLoader + 'static> World<L> {
             player.yaw = yaw;
             player.pitch = pitch;
         }
-        if moved {
-            let sync = EntityPositionSync {
-                entity_id: VarInt(player.entity_id),
-                path: 0,
-                position: player.pos,
-                yaw: player.yaw,
-                pitch: player.pitch,
-                on_ground: player.on_ground,
-            };
-            let head = RotateHead {
-                entity_id: VarInt(player.entity_id),
-                head_yaw: angle(player.yaw),
-            };
-            // ponytail: an absolute sync per move; send deltas if bandwidth shows in M1-18
-            for body in [packet_body(&sync), packet_body(&head)]
-                .into_iter()
-                .flatten()
-            {
-                self.send_visible(id, body);
-            }
+        // the others are told at the next tick, once, however many times the player moved
+        if moved && !std::mem::replace(&mut player.moved, true) {
+            self.movers.push(id);
         }
         let Some(player) = self.players.get_mut(&id) else {
             return Ok(());
@@ -777,6 +851,38 @@ impl<L: ChunkLoader + 'static> World<L> {
             .all(|body| self.sessions.send(viewer, body))
     }
 
+    /// Spawns all of `targets` for `viewer` in one message, so that a crowd does not fill the
+    /// queue of a connection. Returns whether the message could be queued.
+    fn show_many(&mut self, viewer: Uuid, targets: &[Uuid]) -> bool {
+        let mut packets = Packets::new();
+        for target in targets {
+            if let Some(t) = self.players.get(target) {
+                packets.extend(packet_body(&t.add_entity(*target)));
+                if t.sneaking {
+                    packets.extend(packet_body(&t.sneak_data()));
+                }
+            }
+        }
+        packets.is_empty() || self.sessions.send_all(viewer, packets)
+    }
+
+    /// Removes the entities of all of `targets` from `viewer` in one packet. Returns whether it
+    /// could be queued.
+    fn hide_many(&mut self, viewer: Uuid, targets: &[Uuid]) -> bool {
+        let entity_ids: Vec<VarInt> = targets
+            .iter()
+            .filter_map(|t| self.players.get(t))
+            .map(|t| VarInt(t.entity_id))
+            .collect();
+        if entity_ids.is_empty() {
+            return true;
+        }
+        match packet_body(&RemoveEntities { entity_ids }) {
+            Ok(body) => self.sessions.send(viewer, body),
+            Err(_) => true,
+        }
+    }
+
     /// Removes the entity of `target` from `viewer`. Returns whether the packet could be queued.
     fn hide(&mut self, viewer: Uuid, target: Uuid) -> bool {
         let Some(t) = self.players.get(&target) else {
@@ -824,27 +930,56 @@ impl<L: ChunkLoader + 'static> World<L> {
             .filter(|(u, p)| **u != id && p.chunk.distance(centre) <= range)
             .map(|(u, _)| *u)
             .collect();
+        let (entering, leaving): (Vec<Uuid>, Vec<Uuid>) = (
+            now.difference(&before).copied().collect(),
+            before.difference(&now).copied().collect(),
+        );
         let mut gone = HashSet::new();
-        for &other in now.difference(&before) {
+        for &other in &entering {
             self.link(id, other);
-            if !self.show(id, other) {
-                gone.insert(id);
-            }
             if !self.show(other, id) {
                 gone.insert(other);
             }
         }
-        for &other in before.difference(&now) {
+        for &other in &leaving {
             self.unlink(id, other);
-            if !self.hide(id, other) {
-                gone.insert(id);
-            }
             if !self.hide(other, id) {
                 gone.insert(other);
             }
         }
+        // the player moving gets all of them in one message
+        if !self.show_many(id, &entering) || !self.hide_many(id, &leaving) {
+            gone.insert(id);
+        }
         for player in gone {
             self.leave(player);
+        }
+    }
+
+    /// Tells the players who can see them what the players who moved since the last tick did: one
+    /// message for each of the players, with all the moves they can see in it.
+    fn send_moves(&mut self) {
+        let mut groups: HashMap<Uuid, Packets> = HashMap::new();
+        for id in std::mem::take(&mut self.movers) {
+            let Some(player) = self.players.get_mut(&id) else {
+                continue;
+            };
+            player.moved = false;
+            let bodies = player.catch_up();
+            if bodies.is_empty() {
+                continue;
+            }
+            for viewer in &player.visible {
+                groups
+                    .entry(*viewer)
+                    .or_default()
+                    .extend(bodies.iter().cloned());
+            }
+        }
+        for (viewer, packets) in groups {
+            if !self.sessions.send_all(viewer, packets) {
+                self.leave(viewer);
+            }
         }
     }
 
@@ -939,6 +1074,7 @@ impl<L: ChunkLoader + 'static> Instance for World<L> {
     }
 
     fn tick(&mut self) {
+        self.send_moves();
         let waiting: Vec<Uuid> = self
             .players
             .iter()

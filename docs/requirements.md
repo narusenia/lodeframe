@@ -279,11 +279,11 @@ Adventure 相当の層（D19）。Component と MiniMessage は `lodeframe-text`
 ### REQ-PERF-001: 性能目標
 
 - 数値は暫定。M1-18 のベースライン計測（[bench-plan.md](implementation/bench-plan.md) の結果）と Minestom の同条件計測で v0.4 までに確定する。
-- ベースライン（2026-10-01、Apple M4 Pro）: 起動 3〜4 ms、アイドル 3.1 MB、プレイヤー 1 人で約 120 MB。20 TPS を保つのは、全員が同じ場所なら 75〜100 体まで（出力のキューが溢れてサーバーが切る）、視界の外へ散らばれば 500 体（[view-culling-plan.md](implementation/view-culling-plan.md)）。
+- ベースライン（2026-10-01、Apple M4 Pro）: 起動 3〜4 ms、アイドル 3.1 MB、プレイヤー 1 人で約 120 MB。20 TPS を保つのは、視界の外へ散らばれば 500 体（[view-culling-plan.md](implementation/view-culling-plan.md)）、全員が同じ場所でも 500 体（1 tick の平均 28 ms、[move-batch-plan.md](implementation/move-batch-plan.md)）。
 - **受入条件**
   - [ ] アイドル時 RSS < 10MB（examples/lobby、プレイヤー 0）
   - [ ] 起動からリッスン開始まで < 50ms
-  - [ ] ボット 500 体の接続・移動で 20 TPS を維持（散らばった 500 体は達成。全員が同じ場所の 500 体は未達）
+  - [x] ボット 500 体の接続・移動で 20 TPS を維持（散らばった場合も全員が同じ場所の場合も達成。Apple M4 Pro、ボットは同じマシン。余裕は大きくない: 同じ場所で 1 tick の平均 28 ms）
   - [ ] 同条件の Minestom との比較結果を CI で出力
 
 ## INFRA
