@@ -1,6 +1,6 @@
 # lobby と起動 API 実装計画（M1-17）
 
-> **Status**: 実装済み（2 クライアントでの実機確認待ち）— 2026-10-01。実機確認は `cargo run -p lobby`
+> **Status**: 実装済み・実機確認済み（2 クライアントで挨拶・建築の制限・チャットの断りが効く）— 2026-10-01。実機確認は `cargo run -p lobby`
 
 要件: REQ-API-001・REQ-API-002 の使い心地の評価（v0.1-plan の M1-17）。決定: D9・D16・D28・D29（[decisions.md](../decisions.md)）。
 本体に起動 API（`Server`）と入退室のイベントを足し、`examples/lobby` をそれだけで書く。
