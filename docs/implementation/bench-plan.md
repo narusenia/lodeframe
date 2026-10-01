@@ -134,3 +134,7 @@ start to listening: 3 ms; idle memory: 3.1 MB
 - 平均 tick が 1.5 ms → 6〜10 ms に増えたのは、切られずに残るプレイヤーが増え、サーバーが全員に送る仕事をこなしているため。**切られなくなったぶん、O(N²) の送信のコストが見えるようになった**
 
 コミットしない実験として `OUTBOX` を 256 → 1024 にすると、100 体と 150 体で切られなくなった（150 体は平均 tick 22 ms、最大 369 ms、遅れた tick 13）。250 体は崩れた（43 体が失敗し、窓が取れない）。キューの大きさが効くが、最終的な壁は instance スレッドの送信量（視界で絞らない配信）。`OUTBOX` を広げると、遅い接続 1 つが抱える最悪のメモリも増えるので、まだ変えていない。
+
+## 視界で絞ったあと（M1-23）
+
+配信を視界で絞った（[view-culling-plan.md](view-culling-plan.md)）。`xtask bench` に `--layout cluster|spread` と `--view-distance` を足した。散らした 500 体（`--layout spread --view-distance 2`）で、20 TPS・切断 0・1 tick の平均 4.57 ms。全員が同じ場所（cluster）は変わらず、100〜150 体が壁のまま。REQ-PERF-001 の「500 体で 20 TPS」は、散らばった場合に達成し、全員が近い場合は未達。

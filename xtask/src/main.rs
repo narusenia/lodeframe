@@ -16,7 +16,7 @@ fn main() {
         Some("bench") => bench::run(args.collect()),
         _ => {
             eprintln!(
-                "usage: cargo xtask <task>\n\ntasks:\n  datagen [version]  regenerate protocol data from the vanilla data generator\n  bot [args]         run lodeframe-bot (--addr, --count, --seconds, --stagger-ms)\n  bench [args]       measure the lobby under bots (--counts, --window, --port)"
+                "usage: cargo xtask <task>\n\ntasks:\n  datagen [version]  regenerate protocol data from the vanilla data generator\n  bot [args]         run lodeframe-bot (--addr, --count, --seconds, --stagger-ms)\n  bench [args]       measure the lobby under bots (--counts, --window, --port, --layout, --view-distance)"
             );
             std::process::exit(2);
         }

@@ -29,6 +29,10 @@ struct Options {
     counts: Vec<u32>,
     window: Duration,
     port: u16,
+    /// `cluster` or `spread`, as the bots take it.
+    layout: String,
+    /// The chunk radius of the lobby; `None` leaves the lobby's own.
+    view_distance: Option<u32>,
 }
 
 fn parse_options(args: &[String]) -> std::result::Result<Options, String> {
@@ -36,6 +40,8 @@ fn parse_options(args: &[String]) -> std::result::Result<Options, String> {
         counts: vec![1, 10, 50, 75, 100, 250, 500],
         window: Duration::from_secs(10),
         port: 25590,
+        layout: "cluster".into(),
+        view_distance: None,
     };
     let mut args = args.iter();
     while let Some(name) = args.next() {
@@ -50,6 +56,11 @@ fn parse_options(args: &[String]) -> std::result::Result<Options, String> {
             }
             "--window" => options.window = Duration::from_secs(value.parse().map_err(|_| bad())?),
             "--port" => options.port = value.parse().map_err(|_| bad())?,
+            "--layout" => match value.as_str() {
+                "cluster" | "spread" => options.layout = value.clone(),
+                _ => return Err(bad()),
+            },
+            "--view-distance" => options.view_distance = Some(value.parse().map_err(|_| bad())?),
             _ => return Err(format!("unknown option {name}")),
         }
     }
@@ -137,11 +148,18 @@ fn is_drop(line: &str) -> bool {
 
 impl Lobby {
     /// Starts the lobby and waits until it accepts a connection. Returns how long that took.
-    fn start(binary: &Path, addr: SocketAddr) -> Result<(Self, Duration)> {
+    fn start(
+        binary: &Path,
+        addr: SocketAddr,
+        view_distance: Option<u32>,
+    ) -> Result<(Self, Duration)> {
         let begun = Instant::now();
-        let mut child = Command::new(binary)
-            .arg(addr.to_string())
-            .env("LOBBY_STATS", "1")
+        let mut command = Command::new(binary);
+        command.arg(addr.to_string()).env("LOBBY_STATS", "1");
+        if let Some(view_distance) = view_distance {
+            command.env("LOBBY_VIEW_DISTANCE", view_distance.to_string());
+        }
+        let mut child = command
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()?;
@@ -238,7 +256,7 @@ struct Row {
 
 pub fn run(args: Vec<String>) -> Result<()> {
     let options = parse_options(&args).map_err(|e| {
-        format!("{e}\nusage: cargo xtask bench [--counts 1,10,50,75,100,250,500] [--window <seconds>] [--port <port>]")
+        format!("{e}\nusage: cargo xtask bench [--counts 1,10,50,75,100,250,500] [--window <seconds>] [--port <port>] [--layout cluster|spread] [--view-distance <chunks>]")
     })?;
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
@@ -255,7 +273,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     println!("idle ({IDLE_RUNS} runs, smallest)");
     let (mut start, mut idle) = (Duration::MAX, u64::MAX);
     for _ in 0..IDLE_RUNS {
-        let (server, took) = Lobby::start(&lobby, addr)?;
+        let (server, took) = Lobby::start(&lobby, addr, options.view_distance)?;
         thread::sleep(IDLE_WAIT);
         start = start.min(took);
         idle = idle.min(
@@ -268,7 +286,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let mut rows = Vec::new();
     for &count in &options.counts {
         println!("{count} bots ...");
-        let (server, _) = Lobby::start(&lobby, addr)?;
+        let (server, _) = Lobby::start(&lobby, addr, options.view_distance)?;
         let settle = STAGGER * count + SETTLE;
         let total = settle + options.window;
         let bots = Command::new(&bot)
@@ -282,6 +300,12 @@ pub fn run(args: Vec<String>) -> Result<()> {
                 &(total.as_secs() + 2).to_string(),
                 "--stagger-ms",
                 &STAGGER.as_millis().to_string(),
+                "--layout",
+                &options.layout,
+                // one chunk more than the lobby's entity view distance (5, or the view distance
+                // if that is smaller), so that spread bots do not see each other
+                "--spacing",
+                &(options.view_distance.unwrap_or(8).min(5) + 1).to_string(),
             ])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -310,6 +334,13 @@ pub fn run(args: Vec<String>) -> Result<()> {
         std::env::consts::OS,
         std::env::consts::ARCH,
         thread::available_parallelism().map_or(0, |n| n.get())
+    );
+    println!(
+        "layout: {}; view distance: {}",
+        options.layout,
+        options
+            .view_distance
+            .map_or("the lobby's (8)".to_string(), |v| v.to_string())
     );
     println!(
         "start to listening: {} ms; idle memory: {:.1} MB",
@@ -438,6 +469,15 @@ mod tests {
         .unwrap();
         assert_eq!((o.counts, o.window), (vec![5, 10], Duration::from_secs(3)));
         assert!(parse_options(&["--counts".into(), "0".into()]).is_err());
+        let o = parse_options(&[
+            "--layout".into(),
+            "spread".into(),
+            "--view-distance".into(),
+            "2".into(),
+        ])
+        .unwrap();
+        assert_eq!((o.layout.as_str(), o.view_distance), ("spread", Some(2)));
+        assert!(parse_options(&["--layout".into(), "line".into()]).is_err());
         assert!(parse_options(&["--nope".into(), "1".into()]).is_err());
         assert!(parse_options(&["--window".into()]).is_err());
     }

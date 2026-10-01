@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //! A playable world: puts players into it, follows their movement and keeps their chunks.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::{
     chunk::{ChunkLoader, ChunkPos, ChunkTracker, Chunks, HEIGHT, MIN_Y},
@@ -185,6 +185,9 @@ struct Player {
     chunks: ChunkTracker,
     // chunks the player is to get but has not been sent yet, nearest first
     pending: VecDeque<ChunkPos>,
+    // the players this one can see, who can see this one: their entities are spawned for each
+    // other. Moves and sneaking are sent to these only.
+    visible: HashSet<Uuid>,
 }
 
 impl Player {
@@ -197,6 +200,14 @@ impl Player {
             game_mode: VarInt(1),
             listed: true,
             latency: VarInt(0),
+        }
+    }
+
+    fn sneak_data(&self) -> SetEntityFlagsAndPose {
+        SetEntityFlagsAndPose {
+            entity_id: VarInt(self.entity_id),
+            flags: if self.sneaking { FLAG_SNEAKING } else { 0 },
+            pose: VarInt(if self.sneaking { POSE_CROUCHING } else { 0 }),
         }
     }
 
@@ -226,6 +237,11 @@ pub struct World<L> {
     /// encoding chunks does not hold up everyone else. Each chunk is encoded once for all
     /// players, which costs about 2 ms in a release build.
     pub chunks_per_tick: usize,
+    /// How far, in chunks, players see each other: those no more than this many chunks apart
+    /// (the larger of the two axes) have each other's entities spawned and get each other's moves.
+    /// At most [`view_distance`](Self::view_distance) counts, since there is no ground beyond it.
+    /// Set it before players join.
+    pub entity_view_distance: u32,
     chunks: Chunks<L>,
     // the packets of the chunks that were sent, by position; dropped when a block changes
     chunk_packets: HashMap<ChunkPos, Vec<u8>>,
@@ -250,6 +266,7 @@ impl<L: ChunkLoader + 'static> World<L> {
             spawn: Vec3::new(0.5, -60.0, 0.5),
             view_distance: 8,
             chunks_per_tick: 8,
+            entity_view_distance: 5,
             chunks: Chunks::new(loader),
             chunk_packets: HashMap::new(),
             sessions: Sessions::default(),
@@ -301,7 +318,7 @@ impl<L: ChunkLoader + 'static> World<L> {
         }
         // the packet kept for this chunk shows the old block
         self.chunk_packets.remove(&at);
-        self.send_many(None, body);
+        self.send_in_view(at, body);
         true
     }
 
@@ -349,6 +366,7 @@ impl<L: ChunkLoader + 'static> World<L> {
             chunk,
             chunks: ChunkTracker::new(),
             pending: VecDeque::new(),
+            visible: HashSet::new(),
         };
         if self.send_join(id, &player, entity_id).is_err() {
             self.sessions.leave(id);
@@ -360,26 +378,41 @@ impl<L: ChunkLoader + 'static> World<L> {
             .send
             .into();
         tracing::info!(name = %profile.name, players = self.players.len() + 1, "joined");
-        // the newcomer sees everyone (and themselves in the list), everyone sees the newcomer
+        // everyone is in everyone's tab list; entities are only spawned for those in view
         let mut tab: Vec<PlayerInfo> = self.players.iter().map(|(u, p)| p.info(*u)).collect();
         tab.push(player.info(id));
-        let existing: Vec<AddEntity> = self.players.iter().map(|(u, p)| p.add_entity(*u)).collect();
-        let arrival = [
-            packet_body(&PlayerInfoAdd::new(vec![player.info(id)])),
-            packet_body(&player.add_entity(id)),
-        ];
+        let arrival = packet_body(&PlayerInfoAdd::new(vec![player.info(id)]));
+        let range = self.entity_range();
+        let near: Vec<Uuid> = self
+            .players
+            .iter()
+            .filter(|(_, p)| p.chunk.distance(chunk) <= range)
+            .map(|(u, _)| *u)
+            .collect();
         self.players.insert(id, player);
-        let shown = self
-            .send(id, &PlayerInfoAdd::new(tab))
-            .and_then(|()| existing.iter().try_for_each(|e| self.send(id, e)));
+        // the newcomer first: the list, then the players in view
+        let shown = self.send(id, &PlayerInfoAdd::new(tab)).and_then(|()| {
+            near.iter().try_for_each(|n| {
+                self.show(id, *n)
+                    .then_some(())
+                    .ok_or(crate::protocol::Error::InvalidValue("player is gone"))
+            })
+        });
         if shown.is_err() {
             // nobody else has heard of the player, so there is nothing to take back
             self.players.remove(&id);
             self.sessions.leave(id);
             return;
         }
-        for body in arrival.into_iter().flatten() {
+        // then the others: the list first, since a player needs an entry in it to be spawned
+        if let Ok(body) = arrival {
             self.send_others(id, body);
+        }
+        for other in near {
+            self.link(id, other);
+            if !self.show(other, id) {
+                self.leave(other);
+            }
         }
         self.emit(&mut PlayerJoinEvent {
             player: id,
@@ -582,7 +615,7 @@ impl<L: ChunkLoader + 'static> World<L> {
                 .into_iter()
                 .flatten()
             {
-                self.send_others(id, body);
+                self.send_visible(id, body);
             }
         }
         let Some(player) = self.players.get_mut(&id) else {
@@ -612,6 +645,7 @@ impl<L: ChunkLoader + 'static> World<L> {
             self.send(id, &ForgetLevelChunk { x: pos.x, z: pos.z })?;
         }
         // ponytail: chunks stay in memory once loaded; unload them when no player has them
+        self.update_visibility(id);
         self.flush_chunks(id)
     }
 
@@ -717,13 +751,130 @@ impl<L: ChunkLoader + 'static> World<L> {
             return Ok(());
         }
         player.sneaking = sneaking;
-        let data = SetEntityFlagsAndPose {
-            entity_id: VarInt(player.entity_id),
-            flags: if sneaking { FLAG_SNEAKING } else { 0 },
-            pose: VarInt(if sneaking { POSE_CROUCHING } else { 0 }),
-        };
-        self.send_others(id, packet_body(&data)?);
+        let data = player.sneak_data();
+        self.send_visible(id, packet_body(&data)?);
         Ok(())
+    }
+
+    /// How far apart, in chunks, players can be and still see each other.
+    fn entity_range(&self) -> u32 {
+        self.entity_view_distance.min(self.view_distance)
+    }
+
+    /// Spawns `target` for `viewer`, sitting down if `target` is. Returns whether the packets
+    /// could be queued.
+    fn show(&mut self, viewer: Uuid, target: Uuid) -> bool {
+        let Some(t) = self.players.get(&target) else {
+            return true;
+        };
+        let mut bodies = vec![packet_body(&t.add_entity(target))];
+        if t.sneaking {
+            bodies.push(packet_body(&t.sneak_data()));
+        }
+        bodies
+            .into_iter()
+            .flatten()
+            .all(|body| self.sessions.send(viewer, body))
+    }
+
+    /// Removes the entity of `target` from `viewer`. Returns whether the packet could be queued.
+    fn hide(&mut self, viewer: Uuid, target: Uuid) -> bool {
+        let Some(t) = self.players.get(&target) else {
+            return true;
+        };
+        match packet_body(&RemoveEntities {
+            entity_ids: vec![VarInt(t.entity_id)],
+        }) {
+            Ok(body) => self.sessions.send(viewer, body),
+            Err(_) => true,
+        }
+    }
+
+    /// Records that `a` and `b` see each other.
+    fn link(&mut self, a: Uuid, b: Uuid) {
+        if let Some(p) = self.players.get_mut(&a) {
+            p.visible.insert(b);
+        }
+        if let Some(p) = self.players.get_mut(&b) {
+            p.visible.insert(a);
+        }
+    }
+
+    /// Records that `a` and `b` no longer see each other.
+    fn unlink(&mut self, a: Uuid, b: Uuid) {
+        if let Some(p) = self.players.get_mut(&a) {
+            p.visible.remove(&b);
+        }
+        if let Some(p) = self.players.get_mut(&b) {
+            p.visible.remove(&a);
+        }
+    }
+
+    /// Spawns and removes entities for `id` and the players that came into or went out of each
+    /// other's view, after `id` moved to another chunk.
+    fn update_visibility(&mut self, id: Uuid) {
+        let Some(me) = self.players.get(&id) else {
+            return;
+        };
+        let (centre, range) = (me.chunk, self.entity_range());
+        let before = me.visible.clone();
+        let now: HashSet<Uuid> = self
+            .players
+            .iter()
+            .filter(|(u, p)| **u != id && p.chunk.distance(centre) <= range)
+            .map(|(u, _)| *u)
+            .collect();
+        let mut gone = HashSet::new();
+        for &other in now.difference(&before) {
+            self.link(id, other);
+            if !self.show(id, other) {
+                gone.insert(id);
+            }
+            if !self.show(other, id) {
+                gone.insert(other);
+            }
+        }
+        for &other in before.difference(&now) {
+            self.unlink(id, other);
+            if !self.hide(id, other) {
+                gone.insert(id);
+            }
+            if !self.hide(other, id) {
+                gone.insert(other);
+            }
+        }
+        for player in gone {
+            self.leave(player);
+        }
+    }
+
+    /// Sends `body` to the players who can see `id`. Players who can't take it are dropped.
+    fn send_visible(&mut self, id: Uuid, body: Vec<u8>) {
+        let Some(player) = self.players.get(&id) else {
+            return;
+        };
+        let viewers: Vec<Uuid> = player.visible.iter().copied().collect();
+        for viewer in viewers {
+            if !self.sessions.send(viewer, body.clone()) {
+                self.leave(viewer);
+            }
+        }
+    }
+
+    /// Sends `body` to the players who have the chunk `at` in view. Players who can't take it are
+    /// dropped.
+    fn send_in_view(&mut self, at: ChunkPos, body: Vec<u8>) {
+        let viewers: Vec<Uuid> = self
+            .players
+            .iter()
+            .filter(|(_, p)| p.chunk.distance(at) <= self.view_distance)
+            .map(|(u, _)| *u)
+            .collect();
+        for viewer in viewers {
+            if !self.sessions.send(viewer, body.clone()) {
+                self.leave(viewer);
+            }
+        }
     }
 
     /// Sends `body` to every player but `except`. Players who can't take it are dropped.
@@ -752,13 +903,19 @@ impl<L: ChunkLoader + 'static> World<L> {
         let Some(player) = self.players.remove(&id) else {
             return;
         };
-        let gone = [
-            packet_body(&RemoveEntities {
-                entity_ids: vec![VarInt(player.entity_id)],
-            }),
-            packet_body(&PlayerInfoRemove { uuids: vec![id] }),
-        ];
-        for body in gone.into_iter().flatten() {
+        // those who could see the player lose the entity, everyone loses the list entry
+        if let Ok(body) = packet_body(&RemoveEntities {
+            entity_ids: vec![VarInt(player.entity_id)],
+        }) {
+            for viewer in &player.visible {
+                if let Some(other) = self.players.get_mut(viewer) {
+                    other.visible.remove(&id);
+                }
+                // a viewer who is gone is found when the list entry is sent
+                self.sessions.send(*viewer, body.clone());
+            }
+        }
+        if let Ok(body) = packet_body(&PlayerInfoRemove { uuids: vec![id] }) {
             self.send_others(id, body);
         }
         self.emit(&mut PlayerLeaveEvent {

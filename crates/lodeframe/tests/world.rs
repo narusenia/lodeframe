@@ -10,7 +10,7 @@ use lodeframe::{
         ids::play::{clientbound as out, serverbound},
         packets::play::{
             AddEntity, BlockChangedAck, BlockUpdate, Chat, ChunkBatchFinished, DisguisedChat,
-            EntityPositionSync, ForgetLevelChunk, INPUT_SNEAK, Login, MovePlayerPos,
+            EntityPositionSync, FLAG_SNEAKING, ForgetLevelChunk, INPUT_SNEAK, Login, MovePlayerPos,
             MovePlayerPosRot, MovePlayerRot, PlayerAction, PlayerInfoAdd, PlayerInfoRemove,
             PlayerInput, PlayerPosition, RemoveEntities, RotateHead, SetChunkCacheCenter,
             SetEntityFlagsAndPose, SystemChat, UseItemOn,
@@ -856,4 +856,179 @@ fn env_with_block() -> TestEnv<World<FlatGenerator>> {
             .set_block(BlockPos::new(3, -60, 3), STONE.default_state())
     );
     env
+}
+
+/// Far enough from the spawn, with a view distance of 2, to be out of sight: chunk 5.
+const FAR: f64 = 5.0 * 16.0 + 0.5;
+
+fn sneak(env: &mut TestEnv<World<FlatGenerator>>, who: &FakePlayer, on: bool) {
+    env.send(
+        who,
+        &PlayerInput {
+            flags: if on { INPUT_SNEAK } else { 0 },
+        },
+    );
+}
+
+fn removed_entities(received: &[Received]) -> Vec<i32> {
+    received
+        .iter()
+        .filter(|r| r.is::<RemoveEntities>())
+        .flat_map(|r| r.decode::<RemoveEntities>().unwrap().entity_ids)
+        .map(|e| e.0)
+        .collect()
+}
+
+#[test]
+fn players_out_of_sight_do_not_get_each_others_moves_or_sneaking() {
+    let (mut env, mut steve, mut alex) = two_players();
+    env.send(&steve, &walk(FAR));
+    steve.drain();
+    alex.drain();
+
+    env.send(&alex, &walk(3.0));
+    sneak(&mut env, &alex, true);
+    env.send(&steve, &walk(FAR + 1.0));
+
+    assert!(steve.drain().is_empty());
+    assert!(alex.drain().is_empty());
+}
+
+#[test]
+fn walking_out_of_sight_removes_the_entity_and_coming_back_spawns_it_where_it_stands() {
+    let (mut env, mut steve, mut alex) = two_players();
+    // the entity ids are given out in the order of joining
+    let (steve_entity, alex_entity) = (1, 2);
+
+    env.send(&steve, &walk(FAR));
+    let steve_told = steve.drain();
+    let alex_told = alex.drain();
+    assert_eq!(removed_entities(&steve_told), [alex_entity]);
+    assert_eq!(removed_entities(&alex_told), [steve_entity]);
+    // the list is for everyone, in sight or not
+    assert_eq!(count(&steve_told, out::PLAYER_INFO_REMOVE), 0);
+
+    // Alex moves within the chunk they are in; then Steve comes back
+    env.send(&alex, &walk(10.5));
+    assert!(steve.drain().is_empty());
+    env.send(&steve, &walk(0.5));
+
+    let back = steve.drain();
+    let spawned: Vec<AddEntity> = back
+        .iter()
+        .filter(|r| r.is::<AddEntity>())
+        .map(|r| r.decode().unwrap())
+        .collect();
+    assert_eq!(spawned.len(), 1);
+    assert_eq!(spawned[0].entity_id.0, alex_entity);
+    assert_eq!(spawned[0].position, Vec3::new(10.5, -60.0, 0.5));
+    let seen_by_alex = alex.drain();
+    assert_eq!(count(&seen_by_alex, out::ADD_ENTITY), 1);
+    assert_eq!(count(&back, out::PLAYER_INFO_UPDATE), 0);
+}
+
+#[test]
+fn a_sneaking_player_comes_into_view_sitting_down() {
+    let (mut env, mut steve, mut alex) = two_players();
+    env.send(&steve, &walk(FAR));
+    sneak(&mut env, &alex, true);
+    steve.drain();
+    alex.drain();
+
+    env.send(&steve, &walk(0.5));
+
+    let back = steve.drain();
+    assert!(position(&back, out::ADD_ENTITY) < position(&back, out::SET_ENTITY_DATA));
+    let sitting: SetEntityFlagsAndPose = back
+        .iter()
+        .find(|r| r.is::<SetEntityFlagsAndPose>())
+        .unwrap()
+        .decode()
+        .unwrap();
+    assert_eq!(sitting.entity_id.0, 2);
+    assert_eq!(sitting.flags, FLAG_SNEAKING);
+}
+
+#[test]
+fn a_player_who_joins_out_of_sight_of_the_others_gets_the_list_but_no_entities() {
+    let mut env = env();
+    let mut steve = env.connect("Steve");
+    env.send(&steve, &walk(FAR));
+    steve.drain();
+
+    let mut alex = env.connect("Alex");
+
+    for told in [steve.drain(), alex.drain()] {
+        assert_eq!(count(&told, out::PLAYER_INFO_UPDATE), 1);
+        assert_eq!(count(&told, out::ADD_ENTITY), 0);
+    }
+    // and nothing either does reaches the other
+    env.send(&alex, &walk(3.0));
+    assert!(steve.drain().is_empty());
+}
+
+#[test]
+fn a_leave_removes_the_entity_for_those_in_sight_and_the_list_entry_for_everyone() {
+    let mut env = env();
+    let steve = env.connect("Steve");
+    let mut alex = env.connect("Alex");
+    let mut dave = env.connect("Dave");
+    env.send(&dave, &walk(FAR));
+    alex.drain();
+    dave.drain();
+
+    env.disconnect(steve);
+
+    let near = alex.drain();
+    assert_eq!(removed_entities(&near), [1]);
+    assert_eq!(count(&near, out::PLAYER_INFO_REMOVE), 1);
+    let far = dave.drain();
+    assert!(removed_entities(&far).is_empty());
+    assert_eq!(count(&far, out::PLAYER_INFO_REMOVE), 1);
+}
+
+#[test]
+fn block_changes_reach_only_players_who_have_the_chunk_in_view() {
+    let (mut env, mut steve, mut alex) = two_players();
+    env.send(&steve, &walk(FAR));
+    steve.drain();
+    alex.drain();
+
+    assert!(
+        env.instance_mut()
+            .set_block(BlockPos::new(3, -60, 3), STONE.default_state())
+    );
+
+    assert_eq!(count(&alex.drain(), out::BLOCK_UPDATE), 1);
+    assert!(steve.drain().is_empty());
+    // chat is not a matter of sight
+    say(&mut env, &alex, "hello");
+    assert_eq!(chat_lines(&mut steve).len(), 1);
+    // the block changed at Steve's end of the world reaches Steve and not Alex
+    assert!(
+        env.instance_mut()
+            .set_block(BlockPos::new(88, -60, 3), STONE.default_state())
+    );
+    assert_eq!(count(&steve.drain(), out::BLOCK_UPDATE), 1);
+    assert!(block_updates(&alex.drain()).is_empty());
+}
+
+#[test]
+fn the_entity_view_distance_sets_how_far_players_see_each_other() {
+    let mut world = World::new(&Registries::vanilla(), FlatGenerator::default());
+    world.view_distance = 4;
+    world.chunks_per_tick = usize::MAX;
+    world.entity_view_distance = 1;
+    let mut env = TestEnv::new(world);
+    let mut steve = env.connect("Steve");
+    let mut alex = env.connect("Alex");
+    steve.drain();
+    alex.drain();
+
+    // two chunks away: out of sight, though the chunks are still in view
+    env.send(&steve, &walk(2.0 * 16.0 + 0.5));
+    assert_eq!(removed_entities(&steve.drain()), [2]);
+    // one chunk away: in sight again
+    env.send(&steve, &walk(16.5));
+    assert_eq!(count(&steve.drain(), out::ADD_ENTITY), 1);
 }
