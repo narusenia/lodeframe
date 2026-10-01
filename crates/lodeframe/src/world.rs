@@ -119,10 +119,11 @@ impl<L: ChunkLoader> World<L> {
             chunk,
             chunks: ChunkTracker::new(),
         };
-        if self.send_join(id, &mut player, entity_id).is_err() {
+        if self.send_join(id, &player, entity_id).is_err() {
             self.sessions.leave(id);
             return;
         }
+        let join_chunks = player.chunks.update(player.chunk, self.view_distance).send;
         tracing::info!(name = %profile.name, players = self.players.len() + 1, "joined");
         // the newcomer sees everyone (and themselves in the list), everyone sees the newcomer
         let mut tab: Vec<PlayerInfo> = self.players.iter().map(|(u, p)| p.info(*u)).collect();
@@ -143,9 +144,13 @@ impl<L: ChunkLoader> World<L> {
         for body in arrival.into_iter().flatten() {
             self.send_others(id, body);
         }
+        // the chunks come last: encoding them takes long, and the others must not wait for it
+        if self.send_chunks(id, &join_chunks).is_err() {
+            self.leave(id);
+        }
     }
 
-    fn send_join(&mut self, id: Uuid, player: &mut Player, entity_id: i32) -> Result<()> {
+    fn send_join(&mut self, id: Uuid, player: &Player, entity_id: i32) -> Result<()> {
         let dimension = Identifier::new(DIMENSION)?;
         let login = Login {
             entity_id,
@@ -199,9 +204,7 @@ impl<L: ChunkLoader> World<L> {
                 x: VarInt(player.chunk.x),
                 z: VarInt(player.chunk.z),
             },
-        )?;
-        let changes = player.chunks.update(player.chunk, self.view_distance);
-        self.send_chunks(id, &changes.send)
+        )
     }
 
     /// Sends `positions` as one batch.
