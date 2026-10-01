@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::{
     chunk::{ChunkLoader, ChunkPos, ChunkTracker, Chunks, HEIGHT, MIN_Y},
     event::{Event, EventNode},
-    instance::{Instance, Message, Sessions},
+    instance::{Instance, Message, Packets, Sessions},
     login::Profile,
     protocol::{
         BlockPos, BlockState, Decode, Direction, Identifier, Packet, Result, Uuid, VarInt, Vec3,
@@ -349,7 +349,7 @@ impl<L: ChunkLoader + 'static> World<L> {
         self.send_many(None, body);
     }
 
-    fn join(&mut self, profile: Profile, outbound: tokio::sync::mpsc::Sender<Vec<u8>>) {
+    fn join(&mut self, profile: Profile, outbound: tokio::sync::mpsc::Sender<Packets>) {
         let id = profile.uuid;
         self.sessions.join(id, outbound);
         self.next_entity_id += 1;
