@@ -8,8 +8,8 @@ use crate::{
     protocol::{
         Decode, Error, Identifier, Packet, Result, State, VERSION_NAME,
         packets::configuration::{
-            AckFinishConfiguration, ClientboundKnownPacks, FinishConfiguration, KnownPack,
-            ServerboundKnownPacks, UpdateEnabledFeatures,
+            AckFinishConfiguration, ClientboundCustomPayload, ClientboundKnownPacks,
+            FinishConfiguration, KnownPack, ServerboundKnownPacks, UpdateEnabledFeatures,
         },
         split_packet_id,
     },
@@ -21,9 +21,12 @@ use crate::{
 ///
 /// The client must have the vanilla `minecraft:core` pack of this crate's version: the
 /// registries are sent by name and the client fills in the vanilla data itself.
+///
+/// `brand` is the name of the server that the client shows in its debug screen (F3).
 pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
     conn: &mut Connection<S>,
     registries: &Registries,
+    brand: &str,
 ) -> Result<()> {
     if conn.state() != State::Configuration {
         return Err(Error::InvalidValue("not in the configuration state"));
@@ -33,6 +36,8 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
         id: "core".into(),
         version: VERSION_NAME.into(),
     };
+    conn.write_packet(&ClientboundCustomPayload::brand(brand)?)
+        .await?;
     conn.write_packet(&UpdateEnabledFeatures {
         features: vec![Identifier::new("minecraft:vanilla")?],
     })

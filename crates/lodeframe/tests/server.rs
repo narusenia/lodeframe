@@ -102,3 +102,26 @@ async fn the_tick_stats_follow_the_ticks() {
     assert!(after.busy >= before.busy);
     server.stop();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_server_calls_itself_lodeframe_unless_told_otherwise() {
+    for (brand, expected) in [(None, "Lodeframe"), (Some("My Server"), "My Server")] {
+        let mut server = Server::new("127.0.0.1:0");
+        if let Some(brand) = brand {
+            server = server.brand(brand);
+        }
+        let server = server
+            .start(|registries: &Registries| {
+                let mut world = World::new(registries, FlatGenerator::default());
+                world.view_distance = 2;
+                world
+            })
+            .await
+            .unwrap();
+
+        let bot = Bot::connect(server.addr(), "Steve").await.unwrap();
+
+        assert_eq!(bot.server_brand(), Some(expected));
+        server.stop();
+    }
+}

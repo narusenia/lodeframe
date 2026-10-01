@@ -36,7 +36,9 @@ async fn run(threshold: Option<usize>) {
     let server_task = tokio::spawn(async move {
         let profile = login::offline(&mut server, threshold).await.unwrap();
         assert_eq!(server.state(), State::Configuration);
-        configuration::run(&mut server, &registries).await.unwrap();
+        configuration::run(&mut server, &registries, "Lodeframe")
+            .await
+            .unwrap();
         assert_eq!(server.state(), State::Play);
         profile
     });
@@ -61,7 +63,9 @@ async fn run(threshold: Option<usize>) {
     );
     client.write_packet(&LoginAcknowledged).await.unwrap();
 
-    // configuration
+    // configuration: the server says what it is called, then what it offers
+    let brand: ClientboundCustomPayload = client.read_packet().await.unwrap();
+    assert_eq!(brand, ClientboundCustomPayload::brand("Lodeframe").unwrap());
     let _features: UpdateEnabledFeatures = client.read_packet().await.unwrap();
     let offer: ClientboundKnownPacks = client.read_packet().await.unwrap();
     assert_eq!(offer.packs[0].version, VERSION_NAME);
@@ -118,7 +122,10 @@ async fn a_client_without_the_core_pack_is_refused() {
     let mut client = Connection::new(b, T);
     server.set_state(State::Configuration);
     let task =
-        tokio::spawn(async move { configuration::run(&mut server, &Registries::vanilla()).await });
+        tokio::spawn(
+            async move { configuration::run(&mut server, &Registries::vanilla(), "x").await },
+        );
+    let _: ClientboundCustomPayload = client.read_packet().await.unwrap();
     let _: UpdateEnabledFeatures = client.read_packet().await.unwrap();
     let _: ClientboundKnownPacks = client.read_packet().await.unwrap();
     client

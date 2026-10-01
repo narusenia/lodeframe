@@ -133,6 +133,50 @@ pub mod configuration {
         pub version: String,
     }
 
+    /// The channel of the server brand, the name shown next to the server in the debug screen
+    /// (F3).
+    pub const BRAND_CHANNEL: &str = "minecraft:brand";
+
+    /// A plugin message from the server: `data` is whatever the `channel` defines, taking the rest
+    /// of the packet.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::configuration::clientbound::CUSTOM_PAYLOAD, state = Configuration, side = Clientbound)]
+    pub struct ClientboundCustomPayload {
+        /// What the message is for.
+        pub channel: Identifier,
+        /// The message itself.
+        pub data: Vec<u8>,
+    }
+
+    impl ClientboundCustomPayload {
+        /// Tells the client the name of the server, on [`BRAND_CHANNEL`].
+        pub fn brand(brand: &str) -> crate::Result<Self> {
+            let mut data = Vec::new();
+            brand.to_owned().encode(&mut data)?;
+            Ok(Self {
+                channel: Identifier::new(BRAND_CHANNEL)?,
+                data,
+            })
+        }
+    }
+
+    impl Encode for ClientboundCustomPayload {
+        fn encode(&self, w: &mut impl std::io::Write) -> crate::Result<()> {
+            self.channel.encode(w)?;
+            w.write_all(&self.data)?;
+            Ok(())
+        }
+    }
+
+    impl Decode for ClientboundCustomPayload {
+        fn decode(r: &mut &[u8]) -> crate::Result<Self> {
+            let channel = Identifier::decode(r)?;
+            let data = crate::take(r, r.len())?.to_vec();
+            Ok(Self { channel, data })
+        }
+    }
+
     /// The server offers its packs.
     #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Packet)]
     #[lodeframe(crate = crate)]
@@ -1148,6 +1192,19 @@ mod tests {
         .encode(&mut buf)
         .unwrap();
         assert_eq!(buf, [0xac, 0x02]);
+    }
+
+    #[test]
+    fn the_brand_payload_matches_the_vanilla_encoding() {
+        // from the 26.3 codec: the channel, then the brand as a string
+        let expected = [&[0x0f][..], b"minecraft:brand", &[0x09], b"Lodeframe"].concat();
+        let payload = ClientboundCustomPayload::brand("Lodeframe").unwrap();
+        let mut buf = Vec::new();
+        payload.encode(&mut buf).unwrap();
+        assert_eq!(buf, expected);
+        let back = ClientboundCustomPayload::decode(&mut buf.as_slice()).unwrap();
+        assert_eq!(back, payload);
+        assert_eq!(back.channel, Identifier::new(BRAND_CHANNEL).unwrap());
     }
 
     #[test]
