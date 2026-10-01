@@ -41,8 +41,8 @@
 | ✅ | M1-21 | チャンク送信の分割とキャッシュ（入室で tick を塞ぐ問題） | M1-13, M1-16 | #24 |
 | ✅ | M1-22 | 書き込みのまとめ（1 パケットごとの flush をやめる） | M1-18 | #26 |
 | ✅ | M1-23 | 視界による配信の絞り込み | M1-18, M1-22 | #27 |
-| ✅ | M1-24 | 相対移動と更新のまとめ（宛先ごとに 1 tick 分を 1 メッセージ） | M1-22, M1-23 #28 |
-| ✅ | M1-25 | 同じ名前で入り直したときの扱い（古い接続を切る。終わった接続の `Leave` が新しい人を消す不具合の修正） | M1-17 #30 |
+| ✅ | M1-24 | 相対移動と更新のまとめ（宛先ごとに 1 tick 分を 1 メッセージ） | M1-22, M1-23 | #28 |
+| ✅ | M1-25 | 同じ名前で入り直したときの扱い（古い接続を切る。終わった接続の `Leave` が新しい人を消す不具合の修正） | M1-17 | #30 |
 | ✅ | M1-18 | 性能ベースライン | M1-16, M1-17, M1-21 | #25 |
 
 ### 持ち越し（v0.1 で意図してやらなかったもの）
@@ -53,20 +53,20 @@
 |---|---|---|---|
 | アイテム→ブロックの対応（インベントリ） | M1-15 | v0.2 | [block-edit-plan.md](block-edit-plan.md) |
 | 設置の検証（到達距離・衝突・置換可能・オフハンド）と向きで決まる state | M1-15 | v0.2 | 同上 |
-| survival の掘り（掘り時間・ツール・ドロップ） | M1-15 | v0.2 以降 | 同上 |
+| survival の掘り（掘り時間・ツール・ドロップ） | M1-15 | REQ-PLAYER-001 のゲームモードと REQ-WORLD-015 の破壊時間（v0.6） | 同上 |
 | 配信の視界絞り込み（位置・チャット・ブロック） | M1-13〜15 | REQ-ENT-002 | 同上 |
 | ブロック変更の永続化 | M1-15 | REQ-WORLD-003 | 同上 |
 | `SectionBlocksUpdate` の一括送信 | M1-15 | M1-18 の計測次第 | 同上 |
-| クライアントの `ChunkBatchReceived`（速さの申告） | M1-21 | v0.2 以降 | [chunk-stream-plan.md](chunk-stream-plan.md) |
+| クライアントの `ChunkBatchReceived`（速さの申告） | M1-21 | REQ-WORLD-006（v0.3） | [chunk-stream-plan.md](chunk-stream-plan.md) |
 | 全プレイヤー合計の 1 tick のチャンク上限 | M1-21 | M1-18 の結果次第 | 同上 |
 | 送信用チャンネルの本体の共有（`Arc`） | M1-21 | M1-18 の計測次第 | 同上 |
 | 負荷の計測（TPS・RSS・遅延） | M1-16 | M1-18 | [bot-plan.md](bot-plan.md) |
 | vanilla や他実装のサーバーへのボット接続（版追従の検出） | M1-16 | v0.2 以降 | 同上 |
 | ボットの online mode・暗号化 | M1-16 | REQ-AUTH-001 | 同上 |
 | サーバーの起動 API（統合テストと example で組み立てが重複している） | M1-16 | M1-17 の lobby で設計 | 同上 |
-| 落下したらスポーンへ戻す（位置のイベントとテレポート） | M1-17 | v0.2 | [lobby-plan.md](lobby-plan.md) |
-| `Server` の設定（圧縮しきい値、online mode、proxy 転送、複数 Instance、Ctrl-C での停止） | M1-17 | REQ-AUTH-001・REQ-WORLD-005 | 同上 |
-| サーバー一覧の在線人数 | M1-17 | v0.2 | 同上 |
+| 落下したらスポーンへ戻す（位置のイベントとテレポート） | M1-17 | REQ-PLAYER-001・REQ-API-005（v0.2） | [lobby-plan.md](lobby-plan.md) |
+| `Server` の設定（圧縮しきい値、online mode、proxy 転送、複数 Instance、Ctrl-C での停止） | M1-17 | REQ-NET-006・REQ-AUTH-001・REQ-WORLD-005 | 同上 |
+| サーバー一覧の在線人数 | M1-17 | REQ-NET-002（v0.2） | 同上 |
 | 入室の拒否（ログイン前の async イベント） | M1-17 | REQ-API-003 | 同上 |
 | lobby の評価で見つかった API の不満（ハンドラの文脈の型・発火中のイベント・Component の子要素・送信者名の整形・1 人を除く送信） | M1-17 | v0.2 | 同上と decisions.md の D29 |
 | 同条件の Minestom との比較（Minestom が 26.3 を話せるまで） | M1-18 | Minestom の 26.3 対応後。REQ-PERF-001 の最後の項目 | [bench-plan.md](bench-plan.md) |

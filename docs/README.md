@@ -12,6 +12,7 @@ Minestom と同じく vanilla の挙動を持たず、利用者が自分のサ�
 | なぜそう決めたか | [decisions.md](decisions.md) |
 | どう組むか（設計） | [specifications/architecture.md](specifications/architecture.md) |
 | どの順で作るか、なぜその順か | [implementation/roadmap.md](implementation/roadmap.md) |
+| Minestom の機能との対照（どこで埋めるか） | [implementation/minestom-parity.md](implementation/minestom-parity.md) |
 | 今どの単位に着手できるか | [implementation/backlog.md](implementation/backlog.md) |
 | マイルストーンごとの実装計画 | [implementation/](implementation/) の `*-plan.md` |
 
