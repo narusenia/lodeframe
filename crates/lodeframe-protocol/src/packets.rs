@@ -229,7 +229,7 @@ pub mod configuration {
 pub mod play {
     use lodeframe_text::Component;
 
-    use crate::{BlockPos, Decode, Encode, Identifier, Packet, Uuid, VarInt, Vec3};
+    use crate::{BlockPos, BlockState, Decode, Encode, Identifier, Packet, Uuid, VarInt, Vec3};
 
     /// Sent now and then; the client must answer with the same id or is timed out.
     #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Packet)]
@@ -675,6 +675,74 @@ pub mod play {
         pub overlay: bool,
     }
 
+    /// [`PlayerAction::action`] when the player starts digging a block. In creative mode that
+    /// already breaks it.
+    pub const ACTION_START_DESTROY_BLOCK: i32 = 0;
+
+    /// The player started or stopped something with a block or an item. Only the digging
+    /// actions carry a block; for the others `pos` and `face` are zero.
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::serverbound::PLAYER_ACTION, state = Play, side = Serverbound)]
+    pub struct PlayerAction {
+        /// What the player did, like [`ACTION_START_DESTROY_BLOCK`]. 26.3 numbers them 0 start
+        /// digging, 1 change digging direction, 2 abort, 3 stop, 4 drop stack, 5 drop one, 6
+        /// release the item in use, 7 swap hands, 8 stab.
+        pub action: VarInt,
+        /// The block.
+        pub pos: BlockPos,
+        /// The face, as a [`Direction`](crate::Direction) id.
+        pub face: u8,
+        /// Answered with a [`BlockChangedAck`].
+        pub sequence: VarInt,
+    }
+
+    /// The player used the item in hand on a face of a block, which places a block.
+    #[derive(Debug, Clone, PartialEq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::serverbound::USE_ITEM_ON, state = Play, side = Serverbound)]
+    pub struct UseItemOn {
+        /// 0 for the main hand, 1 for the off hand.
+        pub hand: VarInt,
+        /// The block that was clicked.
+        pub pos: BlockPos,
+        /// The face that was clicked, as a [`Direction`](crate::Direction) id.
+        pub face: VarInt,
+        /// Where on the block the click was, from its minimum corner.
+        pub cursor_x: f32,
+        /// See `cursor_x`.
+        pub cursor_y: f32,
+        /// See `cursor_x`.
+        pub cursor_z: f32,
+        /// Whether the click was inside the block.
+        pub inside: bool,
+        /// Whether the click was on the world border.
+        pub world_border_hit: bool,
+        /// Answered with a [`BlockChangedAck`].
+        pub sequence: VarInt,
+    }
+
+    /// Changes one block.
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::BLOCK_UPDATE, state = Play, side = Clientbound)]
+    pub struct BlockUpdate {
+        /// The block.
+        pub pos: BlockPos,
+        /// Its new state.
+        pub state: BlockState,
+    }
+
+    /// Tells the client the server is done with the changes it predicted up to `sequence`.
+    /// Without it the client keeps showing what it predicted.
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::BLOCK_CHANGED_ACK, state = Play, side = Clientbound)]
+    pub struct BlockChangedAck {
+        /// The sequence of the last action that was handled.
+        pub sequence: VarInt,
+    }
+
     /// Bit 0 of the flags byte in the move packets.
     pub const ON_GROUND: u8 = 1;
     /// Bit 1 of the flags byte in the move packets.
@@ -964,5 +1032,61 @@ mod tests {
         .encode(&mut buf)
         .unwrap();
         assert_eq!(buf, [8, 0, 2, b'h', b'i', 1, 8, 0, 1, b'a', 0]);
+    }
+
+    #[test]
+    fn block_edit_packets_match_the_vanilla_encoding() {
+        use crate::{BlockPos, BlockState};
+
+        // all from the 26.3 codecs; the block is (1, -61, -2), packed in 8 bytes
+        let pos = [0, 0, 0, 0x7f, 0xff, 0xff, 0xef, 0xc3];
+
+        let dig = [&[0][..], &pos, &[1, 7]].concat();
+        let action = PlayerAction::decode(&mut dig.as_slice()).unwrap();
+        assert_eq!(action.action.0, ACTION_START_DESTROY_BLOCK);
+        assert_eq!(action.pos, BlockPos::new(1, -61, -2));
+        assert_eq!((action.face, action.sequence.0), (1, 7));
+        let mut buf = Vec::new();
+        action.encode(&mut buf).unwrap();
+        assert_eq!(buf, dig);
+
+        let click = [
+            &[0][..],
+            &pos,
+            &[
+                1, 0x3e, 0x80, 0, 0, 0x3f, 0, 0, 0, 0x3e, 0x80, 0, 0, 1, 0, 9,
+            ],
+        ]
+        .concat();
+        let place = UseItemOn::decode(&mut click.as_slice()).unwrap();
+        assert_eq!((place.hand.0, place.face.0, place.sequence.0), (0, 1, 9));
+        assert_eq!(place.pos, BlockPos::new(1, -61, -2));
+        assert_eq!(
+            (place.cursor_x, place.cursor_y, place.cursor_z),
+            (0.25, 0.5, 0.25)
+        );
+        assert!(place.inside && !place.world_border_hit);
+        let mut buf = Vec::new();
+        place.encode(&mut buf).unwrap();
+        assert_eq!(buf, click);
+
+        // (1, -60, -2) is stone, state 1
+        let update = [0, 0, 0, 0x7f, 0xff, 0xff, 0xef, 0xc4, 1];
+        let mut buf = Vec::new();
+        BlockUpdate {
+            pos: BlockPos::new(1, -60, -2),
+            state: BlockState::from_id(1).unwrap(),
+        }
+        .encode(&mut buf)
+        .unwrap();
+        assert_eq!(buf, update);
+
+        let mut buf = Vec::new();
+        BlockChangedAck {
+            sequence: VarInt(300),
+        }
+        .encode(&mut buf)
+        .unwrap();
+        assert_eq!(buf, [0xac, 0x02]);
     }
 }

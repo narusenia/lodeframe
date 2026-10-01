@@ -20,7 +20,7 @@ mod varint;
 
 pub use block::{Block, BlockInfo, BlockState, Property};
 pub use codec::{Decode, Encode, take};
-pub use coord::{BlockPos, Pos, Vec3};
+pub use coord::{BlockPos, Direction, Pos, Vec3};
 pub use entity_type::EntityType;
 pub use error::{Error, Result};
 pub use frame::{
