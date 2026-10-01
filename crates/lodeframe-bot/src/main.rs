@@ -18,10 +18,14 @@ const USAGE: &str = "lodeframe-bot [--addr <addr>] [--count <n>] [--seconds <s>]
 fn option<T: FromStr>(args: &[String], name: &str, default: T) -> Result<T, String> {
     match args.iter().position(|a| a == name) {
         None => Ok(default),
-        Some(at) => args
-            .get(at + 1)
-            .and_then(|v| v.parse().ok())
-            .ok_or_else(|| format!("{name} needs a value")),
+        Some(at) => {
+            let value = args
+                .get(at + 1)
+                .ok_or_else(|| format!("{name} needs a value"))?;
+            value
+                .parse()
+                .map_err(|_| format!("{name}: {value:?} is not a valid value"))
+        }
     }
 }
 
