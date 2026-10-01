@@ -2,21 +2,23 @@
 //! A player joins a world, walks over a chunk border, and gets the chunks they need.
 
 use lodeframe::{
-    chunk::FlatGenerator,
+    chunk::{ChunkLoader, ChunkPos, FlatGenerator},
     protocol::{
-        Encode, Vec3,
+        BlockPos, Direction, Encode, VarInt, Vec3,
+        block::{AIR, COBBLESTONE, STONE},
         ids::play::{clientbound as out, serverbound},
         packets::play::{
-            AddEntity, Chat, DisguisedChat, EntityPositionSync, ForgetLevelChunk, INPUT_SNEAK,
-            Login, MovePlayerPos, MovePlayerPosRot, MovePlayerRot, PlayerInfoAdd, PlayerInfoRemove,
-            PlayerInput, PlayerPosition, RemoveEntities, RotateHead, SetChunkCacheCenter,
-            SetEntityFlagsAndPose, SystemChat,
+            AddEntity, BlockChangedAck, BlockUpdate, Chat, DisguisedChat, EntityPositionSync,
+            ForgetLevelChunk, INPUT_SNEAK, Login, MovePlayerPos, MovePlayerPosRot, MovePlayerRot,
+            PlayerAction, PlayerInfoAdd, PlayerInfoRemove, PlayerInput, PlayerPosition,
+            RemoveEntities, RotateHead, SetChunkCacheCenter, SetEntityFlagsAndPose, SystemChat,
+            UseItemOn,
         },
     },
     registry::Registries,
     test_util::{FakePlayer, Received, Recorder, TestEnv},
     text::{Color, Component},
-    world::{ChatEvent, World},
+    world::{BlockBreakEvent, BlockPlaceEvent, ChatEvent, World},
 };
 
 fn count(received: &[Received], id: i32) -> usize {
@@ -370,4 +372,256 @@ fn server_messages_go_to_one_player_or_everyone() {
     .encode(&mut expected)
     .unwrap();
     assert_eq!(sent[0].payload(), expected);
+}
+
+/// The top layer of the flat world: grass at y = -61, air above it.
+const GROUND: BlockPos = BlockPos::new(0, -61, 0);
+
+fn dig(pos: BlockPos, sequence: i32) -> PlayerAction {
+    PlayerAction {
+        action: VarInt(0),
+        pos,
+        face: Direction::Up.id(),
+        sequence: VarInt(sequence),
+    }
+}
+
+fn click(pos: BlockPos, face: i32, sequence: i32) -> UseItemOn {
+    UseItemOn {
+        hand: VarInt(0),
+        pos,
+        face: VarInt(face),
+        cursor_x: 0.5,
+        cursor_y: 1.0,
+        cursor_z: 0.5,
+        inside: false,
+        world_border_hit: false,
+        sequence: VarInt(sequence),
+    }
+}
+
+fn block_updates(received: &[Received]) -> Vec<BlockUpdate> {
+    received
+        .iter()
+        .filter(|r| r.is::<BlockUpdate>())
+        .map(|r| r.decode().unwrap())
+        .collect()
+}
+
+/// The sequence of the one `BlockChangedAck` in `received`, which must come last.
+fn ack(received: &[Received]) -> i32 {
+    let acks: Vec<BlockChangedAck> = received
+        .iter()
+        .filter(|r| r.is::<BlockChangedAck>())
+        .map(|r| r.decode().unwrap())
+        .collect();
+    assert_eq!(acks.len(), 1);
+    assert!(received.last().unwrap().is::<BlockChangedAck>());
+    acks[0].sequence.0
+}
+
+#[test]
+fn breaking_a_block_shows_air_to_everyone() {
+    let (mut env, mut steve, mut alex) = two_players();
+    let seen = Recorder::<BlockBreakEvent>::attach(env.instance_mut().events_mut());
+    let grass = env.instance_mut().block(GROUND).unwrap();
+    assert_ne!(grass, AIR.default_state());
+
+    env.send(&steve, &dig(GROUND, 7));
+
+    let air = BlockUpdate {
+        pos: GROUND,
+        state: AIR.default_state(),
+    };
+    let told = steve.drain();
+    assert_eq!(block_updates(&told), std::slice::from_ref(&air));
+    assert_eq!(ack(&told), 7);
+    assert_eq!(block_updates(&alex.drain()), [air]);
+    assert_eq!(env.instance_mut().block(GROUND), Some(AIR.default_state()));
+    let events = seen.take();
+    assert_eq!(events.len(), 1);
+    assert_eq!((events[0].player, events[0].pos), (steve.uuid(), GROUND));
+    assert_eq!(events[0].block, grass);
+}
+
+#[test]
+fn placing_a_block_goes_on_the_clicked_face() {
+    let faces = [
+        (Direction::Down, (0, -1, 0)),
+        (Direction::Up, (0, 1, 0)),
+        (Direction::North, (0, 0, -1)),
+        (Direction::South, (0, 0, 1)),
+        (Direction::West, (-1, 0, 0)),
+        (Direction::East, (1, 0, 0)),
+    ];
+    for (n, (face, (dx, dy, dz))) in faces.into_iter().enumerate() {
+        let (mut env, mut steve, mut alex) = two_players();
+        let seen = Recorder::<BlockPlaceEvent>::attach(env.instance_mut().events_mut());
+        let at = BlockPos::new(dx, -61 + dy, dz);
+
+        env.send(&steve, &click(GROUND, i32::from(face.id()), n as i32));
+
+        let stone = BlockUpdate {
+            pos: at,
+            state: STONE.default_state(),
+        };
+        let told = steve.drain();
+        assert_eq!(
+            block_updates(&told),
+            std::slice::from_ref(&stone),
+            "{face:?}"
+        );
+        assert_eq!(ack(&told), n as i32);
+        assert_eq!(block_updates(&alex.drain()), [stone], "{face:?}");
+        assert_eq!(env.instance_mut().block(at), Some(STONE.default_state()));
+        let events = seen.take();
+        assert_eq!(events.len(), 1);
+        assert_eq!((events[0].pos, events[0].face), (at, face));
+    }
+}
+
+#[test]
+fn a_cancelled_break_puts_the_block_back_for_the_player_only() {
+    let (mut env, mut steve, mut alex) = two_players();
+    env.instance_mut()
+        .events_mut()
+        .on(|e: &mut BlockBreakEvent, _| e.cancel());
+    let grass = env.instance_mut().block(GROUND).unwrap();
+
+    env.send(&steve, &dig(GROUND, 3));
+
+    let told = steve.drain();
+    assert_eq!(
+        block_updates(&told),
+        [BlockUpdate {
+            pos: GROUND,
+            state: grass
+        }]
+    );
+    assert_eq!(ack(&told), 3);
+    assert!(alex.drain().is_empty());
+    assert_eq!(env.instance_mut().block(GROUND), Some(grass));
+}
+
+#[test]
+fn a_cancelled_place_takes_the_predicted_block_away_from_the_player_only() {
+    let (mut env, mut steve, mut alex) = two_players();
+    env.instance_mut()
+        .events_mut()
+        .on(|e: &mut BlockPlaceEvent, _| e.cancel());
+    let above = BlockPos::new(0, -60, 0);
+
+    env.send(&steve, &click(GROUND, 1, 4));
+
+    let told = steve.drain();
+    assert_eq!(
+        block_updates(&told),
+        [BlockUpdate {
+            pos: above,
+            state: AIR.default_state()
+        }]
+    );
+    assert_eq!(ack(&told), 4);
+    assert!(alex.drain().is_empty());
+    assert_eq!(env.instance_mut().block(above), Some(AIR.default_state()));
+}
+
+#[test]
+fn a_handler_can_change_what_is_placed() {
+    let (mut env, mut steve, mut alex) = two_players();
+    env.instance_mut()
+        .events_mut()
+        .on(|e: &mut BlockPlaceEvent, _| e.block = COBBLESTONE.default_state());
+    let above = BlockPos::new(0, -60, 0);
+
+    env.send(&steve, &click(GROUND, 1, 1));
+
+    let cobble = BlockUpdate {
+        pos: above,
+        state: COBBLESTONE.default_state(),
+    };
+    assert_eq!(block_updates(&steve.drain()), std::slice::from_ref(&cobble));
+    assert_eq!(block_updates(&alex.drain()), [cobble]);
+}
+
+#[test]
+fn edits_the_world_has_no_place_for_are_answered_and_change_nothing() {
+    let (mut env, mut steve, mut alex) = two_players();
+    let top = BlockPos::new(0, 319, 0);
+    let bottom = BlockPos::new(0, -64, 0);
+
+    // digging air, placing above the highest block, placing below the lowest, a face that
+    // does not exist
+    env.send(&steve, &dig(BlockPos::new(0, -50, 0), 1));
+    env.send(&steve, &click(top, 1, 2));
+    env.send(&steve, &click(bottom, 0, 3));
+    env.send(&steve, &click(GROUND, 9, 4));
+
+    let told = steve.drain();
+    assert_eq!(count(&told, out::BLOCK_CHANGED_ACK), 4);
+    // each answer undoes what the player predicted, if there is a block there at all
+    let resync = block_updates(&told);
+    assert_eq!(resync.len(), 2);
+    assert_eq!(resync[0].state, AIR.default_state());
+    assert_eq!(resync[1].pos, GROUND);
+    assert!(alex.drain().is_empty());
+    assert!(!steve.is_disconnected());
+}
+
+#[test]
+fn a_chunk_the_loader_does_not_have_is_not_edited() {
+    let flat = FlatGenerator::default();
+    let mut world = World::new(&Registries::vanilla(), move |pos: ChunkPos| {
+        if pos.x >= 100 { None } else { flat.load(pos) }
+    });
+    world.view_distance = 2;
+    let mut env = TestEnv::new(world);
+    let mut steve = env.connect("Steve");
+    steve.drain();
+    let far = BlockPos::new(100 * 16, -61, 0);
+
+    env.send(&steve, &click(far, 1, 5));
+
+    let told = steve.drain();
+    assert_eq!(ack(&told), 5);
+    assert!(block_updates(&told).is_empty());
+    assert_eq!(env.instance_mut().block(far), None);
+    assert!(!env.instance_mut().set_block(far, STONE.default_state()));
+}
+
+#[test]
+fn the_other_player_actions_are_not_edits() {
+    let (mut env, mut steve, mut alex) = two_players();
+    // 5 is dropping one item
+    env.send(
+        &steve,
+        &PlayerAction {
+            action: VarInt(5),
+            ..dig(GROUND, 1)
+        },
+    );
+
+    assert!(steve.drain().is_empty());
+    assert!(alex.drain().is_empty());
+    assert_ne!(env.instance_mut().block(GROUND), Some(AIR.default_state()));
+}
+
+#[test]
+fn set_block_shows_the_change_to_everyone() {
+    let (mut env, mut steve, mut alex) = two_players();
+    let at = BlockPos::new(3, -60, 3);
+
+    assert!(env.instance_mut().set_block(at, STONE.default_state()));
+
+    let stone = BlockUpdate {
+        pos: at,
+        state: STONE.default_state(),
+    };
+    assert_eq!(block_updates(&steve.drain()), std::slice::from_ref(&stone));
+    assert_eq!(block_updates(&alex.drain()), [stone]);
+    assert_eq!(env.instance_mut().block(at), Some(STONE.default_state()));
+    // above the highest block: nothing changes and nothing is sent
+    let sky = BlockPos::new(0, 320, 0);
+    assert!(!env.instance_mut().set_block(sky, STONE.default_state()));
+    assert!(steve.drain().is_empty());
 }

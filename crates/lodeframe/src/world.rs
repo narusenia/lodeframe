@@ -4,21 +4,23 @@
 use std::collections::HashMap;
 
 use crate::{
-    chunk::{ChunkLoader, ChunkPos, ChunkTracker, Chunks},
+    chunk::{ChunkLoader, ChunkPos, ChunkTracker, Chunks, HEIGHT, MIN_Y},
     event::{Event, EventNode},
     instance::{Instance, Message, Sessions},
     login::Profile,
     protocol::{
-        Decode, Identifier, Packet, Result, Uuid, VarInt, Vec3,
+        BlockPos, BlockState, Decode, Direction, Identifier, Packet, Result, Uuid, VarInt, Vec3,
+        block::{AIR, STONE},
         entity_type::PLAYER,
         ids, packet_body,
         packets::play::{
-            AddEntity, Chat, ChunkBatchFinished, ChunkBatchStart, DisguisedChat,
-            EntityPositionSync, FLAG_SNEAKING, ForgetLevelChunk, GameEvent, INPUT_SNEAK,
-            LEVEL_CHUNKS_LOAD_START, Login, MovePlayerPos, MovePlayerPosRot, MovePlayerRot,
-            MovePlayerStatusOnly, ON_GROUND, POSE_CROUCHING, PlayerInfo, PlayerInfoAdd,
-            PlayerInfoRemove, PlayerInput, PlayerPosition, RemoveEntities, RotateHead,
-            SetChunkCacheCenter, SetEntityFlagsAndPose, SpawnInfo, SystemChat, angle,
+            ACTION_START_DESTROY_BLOCK, AddEntity, BlockChangedAck, BlockUpdate, Chat,
+            ChunkBatchFinished, ChunkBatchStart, DisguisedChat, EntityPositionSync, FLAG_SNEAKING,
+            ForgetLevelChunk, GameEvent, INPUT_SNEAK, LEVEL_CHUNKS_LOAD_START, Login,
+            MovePlayerPos, MovePlayerPosRot, MovePlayerRot, MovePlayerStatusOnly, ON_GROUND,
+            POSE_CROUCHING, PlayerAction, PlayerInfo, PlayerInfoAdd, PlayerInfoRemove, PlayerInput,
+            PlayerPosition, RemoveEntities, RotateHead, SetChunkCacheCenter, SetEntityFlagsAndPose,
+            SpawnInfo, SystemChat, UseItemOn, angle,
         },
         split_packet_id,
     },
@@ -59,6 +61,77 @@ impl Event for ChatEvent {
     fn is_cancelled(&self) -> bool {
         self.cancelled
     }
+}
+
+/// A player breaks a block. Cancel it to leave the block as it is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockBreakEvent {
+    /// Who breaks it.
+    pub player: Uuid,
+    /// The block's position.
+    pub pos: BlockPos,
+    /// The state it has now.
+    pub block: BlockState,
+    cancelled: bool,
+}
+
+impl BlockBreakEvent {
+    /// Keeps the block from breaking.
+    pub fn cancel(&mut self) {
+        self.cancelled = true;
+    }
+}
+
+impl Event for BlockBreakEvent {
+    fn is_cancelled(&self) -> bool {
+        self.cancelled
+    }
+}
+
+/// A player places a block. Cancel it to place nothing, or set [`block`](Self::block) to place
+/// something else.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockPlaceEvent {
+    /// Who places it.
+    pub player: Uuid,
+    /// Where it goes: next to the block that was clicked, on the face that was clicked.
+    pub pos: BlockPos,
+    /// The face of the clicked block.
+    pub face: Direction,
+    /// What is placed. Stone to begin with: the server does not know what the player holds yet.
+    pub block: BlockState,
+    cancelled: bool,
+}
+
+impl BlockPlaceEvent {
+    /// Keeps the block from being placed.
+    pub fn cancel(&mut self) {
+        self.cancelled = true;
+    }
+}
+
+impl Event for BlockPlaceEvent {
+    fn is_cancelled(&self) -> bool {
+        self.cancelled
+    }
+}
+
+/// The chunk of `pos` and the block's place in it, or `None` where the world has no block: above
+/// or below its height, or too far out to be sent.
+fn locate(pos: BlockPos) -> Option<(ChunkPos, usize, usize)> {
+    let reach = -(1 << 25)..(1 << 25);
+    let height = MIN_Y..MIN_Y + HEIGHT;
+    (reach.contains(&pos.x) && reach.contains(&pos.z) && height.contains(&pos.y)).then(|| {
+        (
+            chunk_of_block(pos.x, pos.z),
+            (pos.x & 15) as usize,
+            (pos.z & 15) as usize,
+        )
+    })
+}
+
+fn chunk_of_block(x: i32, z: i32) -> ChunkPos {
+    ChunkPos::new(x >> 4, z >> 4)
 }
 
 /// Whether the chat box would have let the player type `text`. The game itself rejects
@@ -159,6 +232,34 @@ impl<L: ChunkLoader + 'static> World<L> {
     /// handler are lost. Attach them before the world runs.
     pub fn events_mut(&mut self) -> &mut EventNode<Self> {
         &mut self.events
+    }
+
+    /// The block at `pos`, loading its chunk if needed. `None` outside the world's height and
+    /// where the loader has no chunk.
+    pub fn block(&mut self, pos: BlockPos) -> Option<BlockState> {
+        let (chunk, x, z) = locate(pos)?;
+        self.chunks.get(chunk)?.block(x, pos.y, z)
+    }
+
+    /// Sets the block at `pos` and shows it to everyone. Returns `false`, changing nothing,
+    /// outside the world's height and where the loader has no chunk.
+    ///
+    /// The change lives in memory only; see [`Chunks::get_mut`].
+    pub fn set_block(&mut self, pos: BlockPos, state: BlockState) -> bool {
+        let Some((chunk, x, z)) = locate(pos) else {
+            return false;
+        };
+        let Ok(body) = packet_body(&BlockUpdate { pos, state }) else {
+            return false;
+        };
+        let Some(chunk) = self.chunks.get_mut(chunk) else {
+            return false;
+        };
+        if !chunk.set_block(x, pos.y, z, state) {
+            return false;
+        }
+        self.send_many(None, body);
+        true
     }
 
     /// Shows `message` to one player in the chat. Does nothing if they are not here.
@@ -364,6 +465,12 @@ impl<L: ChunkLoader + 'static> World<L> {
                 let line = Chat::decode(&mut payload)?;
                 return self.chat(id, line.message);
             }
+            ids::play::serverbound::PLAYER_ACTION => {
+                return self.player_action(id, PlayerAction::decode(&mut payload)?);
+            }
+            ids::play::serverbound::USE_ITEM_ON => {
+                return self.place(id, UseItemOn::decode(&mut payload)?);
+            }
             // commands, teleport and batch answers, ...: nothing to do yet
             _ => return Ok(()),
         };
@@ -439,11 +546,7 @@ impl<L: ChunkLoader + 'static> World<L> {
             message: Component::text(text),
             cancelled: false,
         };
-        // handlers get `&mut self`, so the node is taken out of it while they run
-        let mut events = std::mem::take(&mut self.events);
-        let cancelled = events.emit(&mut event, self);
-        self.events = events;
-        if cancelled {
+        if self.emit(&mut event) {
             return Ok(());
         }
         let line = DisguisedChat {
@@ -454,6 +557,72 @@ impl<L: ChunkLoader + 'static> World<L> {
         };
         self.send_many(None, packet_body(&line)?);
         Ok(())
+    }
+
+    /// Runs the handlers of `event`. Returns whether it ended up cancelled.
+    fn emit<E: Event>(&mut self, event: &mut E) -> bool {
+        // handlers get `&mut self`, so the node is taken out of it while they run
+        let mut events = std::mem::take(&mut self.events);
+        let cancelled = events.emit(event, self);
+        self.events = events;
+        cancelled
+    }
+
+    fn player_action(&mut self, id: Uuid, action: PlayerAction) -> Result<()> {
+        // creative: starting to dig breaks the block; the other actions need nothing here
+        if action.action.0 != ACTION_START_DESTROY_BLOCK || !self.players.contains_key(&id) {
+            return Ok(());
+        }
+        let pos = action.pos;
+        let mut changed = false;
+        if let Some(block) = self.block(pos).filter(|b| *b != AIR.default_state()) {
+            let mut event = BlockBreakEvent {
+                player: id,
+                pos,
+                block,
+                cancelled: false,
+            };
+            changed = !self.emit(&mut event) && self.set_block(pos, AIR.default_state());
+        }
+        self.finish_edit(id, pos, changed, action.sequence)
+    }
+
+    fn place(&mut self, id: Uuid, click: UseItemOn) -> Result<()> {
+        if !self.players.contains_key(&id) {
+            return Ok(());
+        }
+        // ponytail: any hand places; reach, collision and what is already there are not checked
+        let mut changed = false;
+        let mut pos = click.pos;
+        if let Some(face) = Direction::from_id(click.face.0) {
+            pos = click.pos.offset(face);
+            if self.block(pos).is_some() {
+                let mut event = BlockPlaceEvent {
+                    player: id,
+                    pos,
+                    face,
+                    block: STONE.default_state(),
+                    cancelled: false,
+                };
+                changed = !self.emit(&mut event) && self.set_block(pos, event.block);
+            }
+        }
+        self.finish_edit(id, pos, changed, click.sequence)
+    }
+
+    /// Ends a block edit for `id`. If nothing changed, tells them what is at `pos`, so what their
+    /// client predicted is undone; then confirms `sequence` either way.
+    fn finish_edit(
+        &mut self,
+        id: Uuid,
+        pos: BlockPos,
+        changed: bool,
+        sequence: VarInt,
+    ) -> Result<()> {
+        if !changed && let Some(state) = self.block(pos) {
+            self.send(id, &BlockUpdate { pos, state })?;
+        }
+        self.send(id, &BlockChangedAck { sequence })
     }
 
     fn set_sneaking(&mut self, id: Uuid, sneaking: bool) -> Result<()> {
