@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //! A playable world: puts players into it, follows their movement and keeps their chunks.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use crate::{
     chunk::{ChunkLoader, ChunkPos, ChunkTracker, Chunks, HEIGHT, MIN_Y},
@@ -183,6 +183,8 @@ struct Player {
     sneaking: bool,
     chunk: ChunkPos,
     chunks: ChunkTracker,
+    // chunks the player is to get but has not been sent yet, nearest first
+    pending: VecDeque<ChunkPos>,
 }
 
 impl Player {
@@ -219,7 +221,14 @@ pub struct World<L> {
     pub spawn: Vec3,
     /// Chunk radius sent to each player.
     pub view_distance: u32,
+    /// The most chunks one player is sent in one tick, at least 1. A player who joins or crosses
+    /// a chunk border gets the first batch at once and the rest over the next ticks, so that
+    /// encoding chunks does not hold up everyone else. Each chunk is encoded once for all
+    /// players, which costs about 2 ms in a release build.
+    pub chunks_per_tick: usize,
     chunks: Chunks<L>,
+    // the packets of the chunks that were sent, by position; dropped when a block changes
+    chunk_packets: HashMap<ChunkPos, Vec<u8>>,
     sessions: Sessions,
     players: HashMap<Uuid, Player>,
     dimension_type: i32,
@@ -240,7 +249,9 @@ impl<L: ChunkLoader + 'static> World<L> {
         Self {
             spawn: Vec3::new(0.5, -60.0, 0.5),
             view_distance: 8,
+            chunks_per_tick: 8,
             chunks: Chunks::new(loader),
+            chunk_packets: HashMap::new(),
             sessions: Sessions::default(),
             players: HashMap::new(),
             dimension_type: dimension_type as i32,
@@ -276,18 +287,20 @@ impl<L: ChunkLoader + 'static> World<L> {
     ///
     /// The change lives in memory only; see [`Chunks::get_mut`].
     pub fn set_block(&mut self, pos: BlockPos, state: BlockState) -> bool {
-        let Some((chunk, x, z)) = locate(pos) else {
+        let Some((at, x, z)) = locate(pos) else {
             return false;
         };
         let Ok(body) = packet_body(&BlockUpdate { pos, state }) else {
             return false;
         };
-        let Some(chunk) = self.chunks.get_mut(chunk) else {
+        let Some(chunk) = self.chunks.get_mut(at) else {
             return false;
         };
         if !chunk.set_block(x, pos.y, z, state) {
             return false;
         }
+        // the packet kept for this chunk shows the old block
+        self.chunk_packets.remove(&at);
         self.send_many(None, body);
         true
     }
@@ -335,12 +348,17 @@ impl<L: ChunkLoader + 'static> World<L> {
             sneaking: false,
             chunk,
             chunks: ChunkTracker::new(),
+            pending: VecDeque::new(),
         };
         if self.send_join(id, &player, entity_id).is_err() {
             self.sessions.leave(id);
             return;
         }
-        let join_chunks = player.chunks.update(player.chunk, self.view_distance).send;
+        player.pending = player
+            .chunks
+            .update(player.chunk, self.view_distance)
+            .send
+            .into();
         tracing::info!(name = %profile.name, players = self.players.len() + 1, "joined");
         // the newcomer sees everyone (and themselves in the list), everyone sees the newcomer
         let mut tab: Vec<PlayerInfo> = self.players.iter().map(|(u, p)| p.info(*u)).collect();
@@ -367,8 +385,8 @@ impl<L: ChunkLoader + 'static> World<L> {
             player: id,
             name: profile.name,
         });
-        // the chunks come last: encoding them takes long, and the others must not wait for it
-        if self.send_chunks(id, &join_chunks).is_err() {
+        // the chunks come last, the nearest first; `tick` sends the rest
+        if self.flush_chunks(id).is_err() {
             self.leave(id);
         }
     }
@@ -430,6 +448,30 @@ impl<L: ChunkLoader + 'static> World<L> {
         )
     }
 
+    /// The packet that shows the chunk at `pos`, encoded the first time and kept until a block in
+    /// the chunk changes. `None` if the loader has nothing there.
+    fn chunk_body(&mut self, pos: ChunkPos) -> Result<Option<Vec<u8>>> {
+        if let Some(body) = self.chunk_packets.get(&pos) {
+            return Ok(Some(body.clone()));
+        }
+        let Some(chunk) = self.chunks.get(pos) else {
+            return Ok(None);
+        };
+        let body = packet_body(&chunk.to_packet(pos, self.biome_count)?)?;
+        self.chunk_packets.insert(pos, body.clone());
+        Ok(Some(body))
+    }
+
+    /// Sends the next batch of the chunks `id` is waiting for, at most `chunks_per_tick`.
+    fn flush_chunks(&mut self, id: Uuid) -> Result<()> {
+        let Some(player) = self.players.get_mut(&id) else {
+            return Ok(());
+        };
+        let count = self.chunks_per_tick.max(1).min(player.pending.len());
+        let batch: Vec<ChunkPos> = player.pending.drain(..count).collect();
+        self.send_chunks(id, &batch)
+    }
+
     /// Sends `positions` as one batch.
     fn send_chunks(&mut self, id: Uuid, positions: &[ChunkPos]) -> Result<()> {
         if positions.is_empty() {
@@ -439,10 +481,9 @@ impl<L: ChunkLoader + 'static> World<L> {
         let mut count = 0;
         for &pos in positions {
             // ponytail: a position the loader has nothing for is skipped, not retried
-            let Some(chunk) = self.chunks.get(pos) else {
+            let Some(body) = self.chunk_body(pos)? else {
                 continue;
             };
-            let body = packet_body(&chunk.to_packet(pos, self.biome_count)?)?;
             self.send_body(id, body)?;
             count += 1;
         }
@@ -553,6 +594,13 @@ impl<L: ChunkLoader + 'static> World<L> {
         }
         player.chunk = chunk;
         let changes = player.chunks.update(chunk, self.view_distance);
+        // what is no longer wanted is not sent; the rest is nearest first from the new centre
+        player.pending.retain(|p| !changes.unload.contains(p));
+        player.pending.extend(changes.send.iter().copied());
+        player
+            .pending
+            .make_contiguous()
+            .sort_by_key(|p| (p.distance(chunk), p.z, p.x));
         self.send(
             id,
             &SetChunkCacheCenter {
@@ -564,7 +612,7 @@ impl<L: ChunkLoader + 'static> World<L> {
             self.send(id, &ForgetLevelChunk { x: pos.x, z: pos.z })?;
         }
         // ponytail: chunks stay in memory once loaded; unload them when no player has them
-        self.send_chunks(id, &changes.send)
+        self.flush_chunks(id)
     }
 
     fn chat(&mut self, id: Uuid, text: String) -> Result<()> {
@@ -733,5 +781,17 @@ impl<L: ChunkLoader + 'static> Instance for World<L> {
         }
     }
 
-    fn tick(&mut self) {}
+    fn tick(&mut self) {
+        let waiting: Vec<Uuid> = self
+            .players
+            .iter()
+            .filter(|(_, p)| !p.pending.is_empty())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in waiting {
+            if self.flush_chunks(id).is_err() {
+                self.leave(id);
+            }
+        }
+    }
 }

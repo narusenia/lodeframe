@@ -6,13 +6,14 @@ use lodeframe::{
     protocol::{
         BlockPos, Direction, Encode, VarInt, Vec3,
         block::{AIR, COBBLESTONE, STONE},
+        chunk::LevelChunkWithLight,
         ids::play::{clientbound as out, serverbound},
         packets::play::{
-            AddEntity, BlockChangedAck, BlockUpdate, Chat, DisguisedChat, EntityPositionSync,
-            ForgetLevelChunk, INPUT_SNEAK, Login, MovePlayerPos, MovePlayerPosRot, MovePlayerRot,
-            PlayerAction, PlayerInfoAdd, PlayerInfoRemove, PlayerInput, PlayerPosition,
-            RemoveEntities, RotateHead, SetChunkCacheCenter, SetEntityFlagsAndPose, SystemChat,
-            UseItemOn,
+            AddEntity, BlockChangedAck, BlockUpdate, Chat, ChunkBatchFinished, DisguisedChat,
+            EntityPositionSync, ForgetLevelChunk, INPUT_SNEAK, Login, MovePlayerPos,
+            MovePlayerPosRot, MovePlayerRot, PlayerAction, PlayerInfoAdd, PlayerInfoRemove,
+            PlayerInput, PlayerPosition, RemoveEntities, RotateHead, SetChunkCacheCenter,
+            SetEntityFlagsAndPose, SystemChat, UseItemOn,
         },
     },
     registry::Registries,
@@ -37,6 +38,8 @@ fn walk(x: f64) -> MovePlayerPos {
 fn env() -> TestEnv<World<FlatGenerator>> {
     let mut world = World::new(&Registries::vanilla(), FlatGenerator::default());
     world.view_distance = 2;
+    // all the chunks at once, so that a test sees them right after the join
+    world.chunks_per_tick = usize::MAX;
     TestEnv::new(world)
 }
 
@@ -700,4 +703,157 @@ fn a_leave_is_announced_after_the_others_were_told() {
         (events[0].player, events[0].name.as_str()),
         (steve_uuid, "Steve")
     );
+}
+
+fn throttled(per_tick: usize) -> TestEnv<World<FlatGenerator>> {
+    let mut world = World::new(&Registries::vanilla(), FlatGenerator::default());
+    world.view_distance = 2;
+    world.chunks_per_tick = per_tick;
+    TestEnv::new(world)
+}
+
+/// The positions of the chunks in `received`, in the order they came.
+fn chunks_in(received: &[Received]) -> Vec<(i32, i32)> {
+    received
+        .iter()
+        .filter(|r| r.is::<LevelChunkWithLight>())
+        .map(|r| {
+            let chunk: LevelChunkWithLight = r.decode().unwrap();
+            (chunk.x, chunk.z)
+        })
+        .collect()
+}
+
+/// The `count` of every `ChunkBatchFinished` in `received`.
+fn batches_in(received: &[Received]) -> Vec<i32> {
+    received
+        .iter()
+        .filter(|r| r.is::<ChunkBatchFinished>())
+        .map(|r| r.decode::<ChunkBatchFinished>().unwrap().count.0)
+        .collect()
+}
+
+#[test]
+fn chunks_arrive_a_batch_at_a_time_nearest_first() {
+    let mut env = throttled(4);
+    let mut steve = env.connect("Steve");
+
+    // the first batch comes with the join, and starts with the chunk the player stands in
+    let first = steve.drain();
+    assert_eq!(batches_in(&first), [4]);
+    let mut seen = chunks_in(&first);
+    assert_eq!(seen.len(), 4);
+    assert_eq!(seen[0], (0, 0));
+
+    // then one batch per tick until the 25 chunks of the view are there
+    for _ in 0..6 {
+        env.tick(1);
+        let batch = steve.drain();
+        assert_eq!(batches_in(&batch).len(), 1);
+        seen.extend(chunks_in(&batch));
+    }
+    assert_eq!(seen.len(), 25);
+    seen.sort_unstable();
+    seen.dedup();
+    assert_eq!(seen.len(), 25);
+    // nothing more is sent
+    env.tick(3);
+    assert!(steve.drain().is_empty());
+}
+
+#[test]
+fn crossing_a_border_sends_a_batch_at_once_and_the_rest_over_the_ticks() {
+    let mut env = throttled(2);
+    let mut steve = env.connect("Steve");
+    env.tick(20);
+    steve.drain();
+
+    // one column of 5 chunks is new
+    env.send(&steve, &walk(16.5));
+    let at_once = steve.drain();
+    assert_eq!(chunks_in(&at_once).len(), 2);
+    assert_eq!(count(&at_once, out::FORGET_LEVEL_CHUNK), 5);
+
+    env.tick(1);
+    assert_eq!(chunks_in(&steve.drain()).len(), 2);
+    env.tick(1);
+    assert_eq!(chunks_in(&steve.drain()).len(), 1);
+    env.tick(1);
+    assert!(steve.drain().is_empty());
+}
+
+#[test]
+fn chunks_that_are_no_longer_in_view_are_not_sent() {
+    let mut env = throttled(2);
+    let mut steve = env.connect("Steve");
+    env.tick(20);
+    steve.drain();
+
+    // two jumps in a row: the second leaves the view of the first behind before it was sent
+    env.send(&steve, &walk(3.0 * 16.0 + 0.5));
+    let first = chunks_in(&steve.drain());
+    env.send(&steve, &walk(8.0 * 16.0 + 0.5));
+    let mut after = chunks_in(&steve.drain());
+    env.tick(30);
+    after.extend(chunks_in(&steve.drain()));
+
+    assert_eq!(first.len(), 2);
+    // exactly the view around chunk x = 8: what the first jump had left to send is gone
+    let in_view = |(x, z): (i32, i32)| (6..=10).contains(&x) && (-2..=2).contains(&z);
+    assert_eq!(after.len(), 25);
+    assert!(after.iter().all(|c| in_view(*c)));
+}
+
+#[test]
+fn a_player_who_leaves_with_chunks_waiting_is_forgotten() {
+    let mut env = throttled(1);
+    let steve = env.connect("Steve");
+    env.disconnect(steve);
+
+    // the queue went with the player: ticking is harmless and the next player is served
+    env.tick(5);
+    let mut alex = env.connect("Alex");
+    assert_eq!(chunks_in(&alex.drain()), [(0, 0)]);
+}
+
+#[test]
+fn a_chunk_is_encoded_once_and_again_after_a_block_changes() {
+    let at_origin = |received: &[Received]| {
+        received
+            .iter()
+            .filter(|r| r.is::<LevelChunkWithLight>())
+            .find(|r| {
+                let chunk: LevelChunkWithLight = r.decode().unwrap();
+                (chunk.x, chunk.z) == (0, 0)
+            })
+            .map(|r| r.payload().to_vec())
+            .unwrap()
+    };
+    let mut env = env();
+    let first = at_origin(&env.connect("Steve").drain());
+    let second = at_origin(&env.connect("Alex").drain());
+    assert_eq!(first, second);
+
+    // a change in the chunk: the next player gets the chunk as it is now
+    assert!(
+        env.instance_mut()
+            .set_block(BlockPos::new(3, -60, 3), STONE.default_state())
+    );
+    let changed = at_origin(&env.connect("Dave").drain());
+    assert_ne!(changed, first);
+    let again = at_origin(&env.connect("Eve").drain());
+    assert_eq!(again, changed);
+
+    // and it is the chunk a world that had the block from the start would send
+    let mut fresh = env_with_block();
+    assert_eq!(at_origin(&fresh.connect("Zed").drain()), changed);
+}
+
+fn env_with_block() -> TestEnv<World<FlatGenerator>> {
+    let mut env = env();
+    assert!(
+        env.instance_mut()
+            .set_block(BlockPos::new(3, -60, 3), STONE.default_state())
+    );
+    env
 }
