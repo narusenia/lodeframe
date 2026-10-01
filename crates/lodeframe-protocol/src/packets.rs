@@ -227,6 +227,8 @@ pub mod configuration {
 /// Play state. Only what the connection layer itself needs; the game packets come with the
 /// units that use them.
 pub mod play {
+    use lodeframe_text::Component;
+
     use crate::{BlockPos, Decode, Encode, Identifier, Packet, Uuid, VarInt, Vec3};
 
     /// Sent now and then; the client must answer with the same id or is timed out.
@@ -616,6 +618,63 @@ pub mod play {
         pub flags: u8,
     }
 
+    /// A line the player typed into the chat box.
+    ///
+    /// On the wire it also carries a timestamp, a salt, an optional signature and the last
+    /// messages the client has seen. Only the text is kept: decoding reads it and ignores the
+    /// rest, encoding writes an unsigned message.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::serverbound::CHAT, state = Play, side = Serverbound)]
+    pub struct Chat {
+        /// What the player typed.
+        pub message: String,
+    }
+
+    impl Encode for Chat {
+        fn encode(&self, w: &mut impl std::io::Write) -> crate::Result<()> {
+            self.message.encode(w)?;
+            // timestamp, salt, no signature, offset, nothing acknowledged (20 bits), checksum
+            w.write_all(&[0; 8 + 8 + 1 + 1 + 3 + 1])?;
+            Ok(())
+        }
+    }
+
+    impl Decode for Chat {
+        fn decode(r: &mut &[u8]) -> crate::Result<Self> {
+            Ok(Self {
+                message: String::decode(r)?,
+            })
+        }
+    }
+
+    /// A chat line that did not come from a signed message, shown as `chat_type` formats it
+    /// with `name` as the sender.
+    #[derive(Debug, Clone, PartialEq, Encode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::DISGUISED_CHAT, state = Play, side = Clientbound)]
+    pub struct DisguisedChat {
+        /// The text.
+        pub message: Component,
+        /// The chat type, as a holder: the registry id plus one.
+        pub chat_type: VarInt,
+        /// The sender's name.
+        pub name: Component,
+        /// The receiver's name, for private messages.
+        pub target_name: Option<Component>,
+    }
+
+    /// A message from the server rather than a player.
+    #[derive(Debug, Clone, PartialEq, Encode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::SYSTEM_CHAT, state = Play, side = Clientbound)]
+    pub struct SystemChat {
+        /// The text.
+        pub content: Component,
+        /// Whether it goes above the hotbar instead of into the chat.
+        pub overlay: bool,
+    }
+
     /// Bit 0 of the flags byte in the move packets.
     pub const ON_GROUND: u8 = 1;
     /// Bit 1 of the flags byte in the move packets.
@@ -673,6 +732,8 @@ pub mod play {
 #[cfg(test)]
 mod tests {
     use super::{configuration::*, login::*, play::*};
+    use lodeframe_text::Component;
+
     use crate::{Decode, Encode, Identifier, Nbt, Uuid, VarInt};
 
     fn roundtrip<T: Encode + Decode + PartialEq + std::fmt::Debug>(v: T) {
@@ -853,5 +914,55 @@ mod tests {
         .encode(&mut buf)
         .unwrap();
         assert_eq!(buf, [3, b'a', b':', b'b', 0]);
+    }
+
+    #[test]
+    fn a_chat_line_decodes_from_what_the_game_sends() {
+        // from the 26.3 codec: "hi", timestamp, salt, no signature, offset 3, 1 acknowledged, checksum
+        let unsigned = [
+            0x02, 0x68, 0x69, 0, 0, 0, 1, 2, 3, 4, 5, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+            0x88, 0, 3, 1, 0, 0, 0x7f,
+        ];
+        assert_eq!(Chat::decode(&mut &unsigned[..]).unwrap().message, "hi");
+        // a signed line has 256 more bytes after the text; only the text is read
+        let mut signed = vec![0x02, 0x68, 0x69, 0, 0, 0, 0, 0, 0, 0, 1, 1];
+        signed.extend([0xAB; 256]);
+        assert_eq!(Chat::decode(&mut &signed[..]).unwrap().message, "hi");
+    }
+
+    #[test]
+    fn an_encoded_chat_line_is_as_long_as_an_unsigned_one() {
+        let mut buf = Vec::new();
+        Chat {
+            message: "hi".into(),
+        }
+        .encode(&mut buf)
+        .unwrap();
+        assert_eq!(buf.len(), 25);
+        assert_eq!(&buf[..3], [2, b'h', b'i']);
+        assert_eq!(Chat::decode(&mut buf.as_slice()).unwrap().message, "hi");
+    }
+
+    #[test]
+    fn server_chat_packets_are_a_component_then_their_fields() {
+        let mut buf = Vec::new();
+        SystemChat {
+            content: Component::text("hi"),
+            overlay: false,
+        }
+        .encode(&mut buf)
+        .unwrap();
+        assert_eq!(buf, [8, 0, 2, b'h', b'i', 0]);
+
+        let mut buf = Vec::new();
+        DisguisedChat {
+            message: Component::text("hi"),
+            chat_type: VarInt(1),
+            name: Component::text("a"),
+            target_name: None,
+        }
+        .encode(&mut buf)
+        .unwrap();
+        assert_eq!(buf, [8, 0, 2, b'h', b'i', 1, 8, 0, 1, b'a', 0]);
     }
 }
