@@ -21,7 +21,7 @@ use tokio::{net::TcpListener, task::JoinHandle};
 use crate::{
     clock::SystemClock,
     configuration,
-    instance::{self, Instance, InstanceHandle},
+    instance::{self, Instance, InstanceHandle, TickStats},
     login,
     net::{Config, serve},
     play,
@@ -122,6 +122,17 @@ impl RunningServer {
     /// The address it listens on, with the real port if it was asked to pick one.
     pub fn addr(&self) -> SocketAddr {
         self.addr
+    }
+
+    /// A handle to the instance, to send it messages or to read its [`TickStats`] while the server
+    /// runs somewhere else (for example in [`wait`](Self::wait)).
+    pub fn instance(&self) -> InstanceHandle {
+        self.instance.clone()
+    }
+
+    /// How the instance's tick loop has been doing since the server started.
+    pub fn tick_stats(&self) -> TickStats {
+        self.instance.tick_stats()
     }
 
     /// Stops listening and stops the instance, which ends every connection.

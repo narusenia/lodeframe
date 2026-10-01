@@ -13,7 +13,7 @@ use std::{
 
 use lodeframe::{
     clock::{Clock, SystemClock},
-    instance::{self, Instance, Message, OUTBOX, Runner, Sessions, TICK},
+    instance::{self, Instance, Message, OUTBOX, Runner, Sessions, TICK, TickStats},
     login::Profile,
     net::Connection,
     play,
@@ -97,6 +97,20 @@ fn run_timed(costs: Vec<Duration>) -> Vec<Duration> {
     starts.take()
 }
 
+/// What the loop counted while ticks cost `costs`.
+fn stats_of(costs: Vec<Duration>) -> TickStats {
+    let clock = FakeClock::new();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (mut runner, handle) = Runner::new(Timed {
+        clock: clock.clone(),
+        costs,
+        starts: Rc::default(),
+        stop: stop.clone(),
+    });
+    runner.run(&clock, &stop);
+    handle.tick_stats()
+}
+
 fn ms(n: u64) -> Duration {
     Duration::from_millis(n)
 }
@@ -129,6 +143,40 @@ fn past_two_seconds_behind_the_loop_starts_over() {
     for w in starts[2..].windows(2) {
         assert_eq!(w[1] - w[0], TICK);
     }
+}
+
+#[test]
+fn ticks_and_their_time_are_counted() {
+    let stats = stats_of(vec![ms(10); 5]);
+
+    assert_eq!(stats.ticks, 5);
+    assert_eq!(stats.busy, ms(50));
+    assert_eq!(stats.busy_max, ms(10));
+    assert_eq!((stats.late, stats.skipped), (0, 0));
+}
+
+#[test]
+fn a_slow_tick_makes_the_next_ones_late() {
+    let mut costs = vec![ms(1); 20];
+    costs[0] = ms(300);
+
+    let stats = stats_of(costs);
+
+    assert_eq!(stats.busy_max, ms(300));
+    // 250 ms behind after the slow tick: the ticks that run back to back until caught up
+    assert!(stats.late >= 2, "{stats:?}");
+    assert_eq!(stats.skipped, 0);
+}
+
+#[test]
+fn giving_up_on_catching_up_is_counted() {
+    let mut costs = vec![ms(1); 8];
+    costs[1] = ms(3000);
+
+    let stats = stats_of(costs);
+
+    assert_eq!(stats.busy_max, ms(3000));
+    assert_eq!(stats.skipped, 1);
 }
 
 struct Counter {
