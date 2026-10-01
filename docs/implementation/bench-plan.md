@@ -138,3 +138,7 @@ start to listening: 3 ms; idle memory: 3.1 MB
 ## 視界で絞ったあと（M1-23）
 
 配信を視界で絞った（[view-culling-plan.md](view-culling-plan.md)）。`xtask bench` に `--layout cluster|spread` と `--view-distance` を足した。散らした 500 体（`--layout spread --view-distance 2`）で、20 TPS・切断 0・1 tick の平均 4.57 ms。全員が同じ場所（cluster）は変わらず、100〜150 体が壁のまま。REQ-PERF-001 の「500 体で 20 TPS」は、散らばった場合に達成し、全員が近い場合は未達。
+
+## 差分と束にしたあと（M1-24）
+
+移動を差分にして 1 tick に 1 回にまとめ、送り先ごとに 1 メッセージの束にし（[move-batch-plan.md](move-batch-plan.md)）、見える人の出現も 1 メッセージにした。全員が同じ場所（cluster）の 500 体で、20 TPS・切断 0・1 tick の平均 28.3 ms（最大 162 ms）。これで REQ-PERF-001 の「500 体で 20 TPS」は、散らばった場合（M1-23）と全員が近い場合の両方で達成した。
