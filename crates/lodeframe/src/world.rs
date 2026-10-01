@@ -36,6 +36,34 @@ const CHAT_TYPE: &str = "minecraft:chat";
 /// The longest line the chat box takes.
 const MAX_CHAT: usize = 256;
 
+/// A player came into the world. The others have been told; the player is still getting their
+/// chunks, so a message sent from a handler arrives before the ground does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerJoinEvent {
+    /// Who came.
+    pub player: Uuid,
+    /// Their name.
+    pub name: String,
+}
+
+impl Event for PlayerJoinEvent {}
+
+/// A player left the world, or was dropped because their connection could not keep up. The
+/// others have been told.
+///
+/// Events raised from inside a handler are not delivered (see
+/// [`events_mut`](World::events_mut)), so a player dropped while one is being handled leaves
+/// without this.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerLeaveEvent {
+    /// Who left.
+    pub player: Uuid,
+    /// Their name.
+    pub name: String,
+}
+
+impl Event for PlayerLeaveEvent {}
+
 /// A player said something in the chat. Cancel it to keep it from the others, or replace
 /// [`message`](Self::message) to change what they see.
 #[derive(Debug, Clone, PartialEq)]
@@ -228,8 +256,10 @@ impl<L: ChunkLoader + 'static> World<L> {
 
     /// The handlers of this world. Events are emitted on it with the world as the context.
     ///
-    /// While an event is being handled this node is empty, so handlers added to it from inside a
-    /// handler are lost. Attach them before the world runs.
+    /// While an event is being handled this node is empty. Handlers added to it from inside a
+    /// handler are lost, and so are the events raised inside a handler, such as a player
+    /// leaving because a message could not be sent to them. Attach handlers before the world
+    /// runs.
     pub fn events_mut(&mut self) -> &mut EventNode<Self> {
         &mut self.events
     }
@@ -325,12 +355,18 @@ impl<L: ChunkLoader + 'static> World<L> {
             .send(id, &PlayerInfoAdd::new(tab))
             .and_then(|()| existing.iter().try_for_each(|e| self.send(id, e)));
         if shown.is_err() {
-            self.leave(id);
+            // nobody else has heard of the player, so there is nothing to take back
+            self.players.remove(&id);
+            self.sessions.leave(id);
             return;
         }
         for body in arrival.into_iter().flatten() {
             self.send_others(id, body);
         }
+        self.emit(&mut PlayerJoinEvent {
+            player: id,
+            name: profile.name,
+        });
         // the chunks come last: encoding them takes long, and the others must not wait for it
         if self.send_chunks(id, &join_chunks).is_err() {
             self.leave(id);
@@ -677,6 +713,10 @@ impl<L: ChunkLoader + 'static> World<L> {
         for body in gone.into_iter().flatten() {
             self.send_others(id, body);
         }
+        self.emit(&mut PlayerLeaveEvent {
+            player: id,
+            name: player.name,
+        });
     }
 }
 

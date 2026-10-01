@@ -18,7 +18,9 @@ use lodeframe::{
     registry::Registries,
     test_util::{FakePlayer, Received, Recorder, TestEnv},
     text::{Color, Component},
-    world::{BlockBreakEvent, BlockPlaceEvent, ChatEvent, World},
+    world::{
+        BlockBreakEvent, BlockPlaceEvent, ChatEvent, PlayerJoinEvent, PlayerLeaveEvent, World,
+    },
 };
 
 fn count(received: &[Received], id: i32) -> usize {
@@ -624,4 +626,78 @@ fn set_block_shows_the_change_to_everyone() {
     let sky = BlockPos::new(0, 320, 0);
     assert!(!env.instance_mut().set_block(sky, STONE.default_state()));
     assert!(steve.drain().is_empty());
+}
+
+fn position(received: &[Received], id: i32) -> usize {
+    received
+        .iter()
+        .position(|r| r.id == id)
+        .unwrap_or_else(|| panic!("no packet {id}"))
+}
+
+#[test]
+fn a_message_from_the_join_handler_reaches_the_newcomer_before_their_chunks() {
+    let mut env = env();
+    env.instance_mut().events_mut().on(
+        |e: &mut PlayerJoinEvent, world: &mut World<FlatGenerator>| {
+            world.send_message(e.player, &Component::text("welcome"));
+        },
+    );
+
+    let got = env.connect("Steve").drain();
+
+    let welcome = position(&got, out::SYSTEM_CHAT);
+    assert!(position(&got, out::LOGIN) < welcome);
+    assert!(welcome < position(&got, out::LEVEL_CHUNK_WITH_LIGHT));
+}
+
+#[test]
+fn the_others_have_heard_of_a_join_by_the_time_the_handler_runs() {
+    let mut env = env();
+    let seen = Recorder::<PlayerJoinEvent>::attach(env.instance_mut().events_mut());
+    env.instance_mut().events_mut().on(
+        |e: &mut PlayerJoinEvent, world: &mut World<FlatGenerator>| {
+            world.broadcast(&Component::text(format!("+ {}", e.name)));
+        },
+    );
+    let mut steve = env.connect("Steve");
+    steve.drain();
+
+    let alex = env.connect("Alex");
+
+    let told = steve.drain();
+    let shown = position(&told, out::ADD_ENTITY);
+    assert!(position(&told, out::PLAYER_INFO_UPDATE) < shown);
+    assert!(shown < position(&told, out::SYSTEM_CHAT));
+    let events = seen.take();
+    assert_eq!(
+        events.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+        ["Steve", "Alex"]
+    );
+    assert_eq!(events[1].player, alex.uuid());
+}
+
+#[test]
+fn a_leave_is_announced_after_the_others_were_told() {
+    let (mut env, steve, mut alex) = two_players();
+    let seen = Recorder::<PlayerLeaveEvent>::attach(env.instance_mut().events_mut());
+    env.instance_mut().events_mut().on(
+        |e: &mut PlayerLeaveEvent, world: &mut World<FlatGenerator>| {
+            world.broadcast(&Component::text(format!("- {}", e.name)));
+        },
+    );
+    let steve_uuid = steve.uuid();
+
+    env.disconnect(steve);
+
+    let told = alex.drain();
+    let removed = position(&told, out::REMOVE_ENTITIES);
+    assert!(removed < position(&told, out::PLAYER_INFO_REMOVE));
+    assert!(position(&told, out::PLAYER_INFO_REMOVE) < position(&told, out::SYSTEM_CHAT));
+    let events = seen.take();
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        (events[0].player, events[0].name.as_str()),
+        (steve_uuid, "Steve")
+    );
 }
