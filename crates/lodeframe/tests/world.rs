@@ -1194,3 +1194,47 @@ fn the_entity_view_distance_sets_how_far_players_see_each_other() {
     env.send(&steve, &walk(16.5));
     assert_eq!(count(&steve.drain(), out::ADD_ENTITY), 1);
 }
+
+#[test]
+fn a_crowd_in_view_is_spawned_in_one_message() {
+    let mut env = env();
+    let _crowd: Vec<FakePlayer> = ["A", "B", "C", "D"].map(|n| env.connect(n)).into();
+    let mut newcomer = env.connect("Newcomer");
+
+    let messages = newcomer.drain_messages();
+
+    // the four entities arrive together, so a crowd cannot fill the queue of a connection
+    let with_entities: Vec<&Vec<Received>> = messages
+        .iter()
+        .filter(|m| m.iter().any(|r| r.is::<AddEntity>()))
+        .collect();
+    assert_eq!(with_entities.len(), 1);
+    assert_eq!(count(with_entities[0], out::ADD_ENTITY), 4);
+}
+
+#[test]
+fn walking_away_from_and_back_to_a_crowd_is_one_message_each_way() {
+    let mut env = env();
+    let mut steve = env.connect("Steve");
+    let _crowd: Vec<FakePlayer> = ["A", "B", "C"].map(|n| env.connect(n)).into();
+    steve.drain();
+
+    env.send(&steve, &walk(FAR));
+    let away = steve.drain_messages();
+    let removals: Vec<&Received> = away
+        .iter()
+        .flatten()
+        .filter(|r| r.is::<RemoveEntities>())
+        .collect();
+    assert_eq!(removals.len(), 1);
+    assert_eq!(removed_entities(&[removals[0].clone()]).len(), 3);
+
+    env.send(&steve, &walk(0.5));
+    let back = steve.drain_messages();
+    let with_entities: Vec<&Vec<Received>> = back
+        .iter()
+        .filter(|m| m.iter().any(|r| r.is::<AddEntity>()))
+        .collect();
+    assert_eq!(with_entities.len(), 1);
+    assert_eq!(count(with_entities[0], out::ADD_ENTITY), 3);
+}

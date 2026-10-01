@@ -485,11 +485,9 @@ impl<L: ChunkLoader + 'static> World<L> {
         self.players.insert(id, player);
         // the newcomer first: the list, then the players in view
         let shown = self.send(id, &PlayerInfoAdd::new(tab)).and_then(|()| {
-            near.iter().try_for_each(|n| {
-                self.show(id, *n)
-                    .then_some(())
-                    .ok_or(crate::protocol::Error::InvalidValue("player is gone"))
-            })
+            self.show_many(id, &near)
+                .then_some(())
+                .ok_or(crate::protocol::Error::InvalidValue("player is gone"))
         });
         if shown.is_err() {
             // nobody else has heard of the player, so there is nothing to take back
@@ -853,6 +851,38 @@ impl<L: ChunkLoader + 'static> World<L> {
             .all(|body| self.sessions.send(viewer, body))
     }
 
+    /// Spawns all of `targets` for `viewer` in one message, so that a crowd does not fill the
+    /// queue of a connection. Returns whether the message could be queued.
+    fn show_many(&mut self, viewer: Uuid, targets: &[Uuid]) -> bool {
+        let mut packets = Packets::new();
+        for target in targets {
+            if let Some(t) = self.players.get(target) {
+                packets.extend(packet_body(&t.add_entity(*target)));
+                if t.sneaking {
+                    packets.extend(packet_body(&t.sneak_data()));
+                }
+            }
+        }
+        packets.is_empty() || self.sessions.send_all(viewer, packets)
+    }
+
+    /// Removes the entities of all of `targets` from `viewer` in one packet. Returns whether it
+    /// could be queued.
+    fn hide_many(&mut self, viewer: Uuid, targets: &[Uuid]) -> bool {
+        let entity_ids: Vec<VarInt> = targets
+            .iter()
+            .filter_map(|t| self.players.get(t))
+            .map(|t| VarInt(t.entity_id))
+            .collect();
+        if entity_ids.is_empty() {
+            return true;
+        }
+        match packet_body(&RemoveEntities { entity_ids }) {
+            Ok(body) => self.sessions.send(viewer, body),
+            Err(_) => true,
+        }
+    }
+
     /// Removes the entity of `target` from `viewer`. Returns whether the packet could be queued.
     fn hide(&mut self, viewer: Uuid, target: Uuid) -> bool {
         let Some(t) = self.players.get(&target) else {
@@ -900,24 +930,26 @@ impl<L: ChunkLoader + 'static> World<L> {
             .filter(|(u, p)| **u != id && p.chunk.distance(centre) <= range)
             .map(|(u, _)| *u)
             .collect();
+        let (entering, leaving): (Vec<Uuid>, Vec<Uuid>) = (
+            now.difference(&before).copied().collect(),
+            before.difference(&now).copied().collect(),
+        );
         let mut gone = HashSet::new();
-        for &other in now.difference(&before) {
+        for &other in &entering {
             self.link(id, other);
-            if !self.show(id, other) {
-                gone.insert(id);
-            }
             if !self.show(other, id) {
                 gone.insert(other);
             }
         }
-        for &other in before.difference(&now) {
+        for &other in &leaving {
             self.unlink(id, other);
-            if !self.hide(id, other) {
-                gone.insert(id);
-            }
             if !self.hide(other, id) {
                 gone.insert(other);
             }
+        }
+        // the player moving gets all of them in one message
+        if !self.show_many(id, &entering) || !self.hide_many(id, &leaving) {
+            gone.insert(id);
         }
         for player in gone {
             self.leave(player);
