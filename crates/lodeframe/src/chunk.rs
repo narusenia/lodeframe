@@ -164,11 +164,17 @@ impl<L: ChunkLoader> Chunks<L> {
 
     /// The chunk at `pos`, loading it the first time. `None` if the loader has nothing there.
     pub fn get(&mut self, pos: ChunkPos) -> Option<&Chunk> {
+        self.get_mut(pos).map(|chunk| &*chunk)
+    }
+
+    /// Like [`get`](Self::get), to change the chunk. Changes stay in memory only: the loader is
+    /// not told, and they are lost when the chunk is unloaded.
+    pub fn get_mut(&mut self, pos: ChunkPos) -> Option<&mut Chunk> {
         if !self.loaded.contains_key(&pos) {
             let chunk = self.loader.load(pos)?;
             self.loaded.insert(pos, chunk);
         }
-        self.loaded.get(&pos)
+        self.loaded.get_mut(&pos)
     }
 
     /// Drops the chunk at `pos` from memory. It is loaded again if asked for.

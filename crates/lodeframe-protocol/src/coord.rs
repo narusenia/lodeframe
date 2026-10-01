@@ -111,6 +111,61 @@ impl BlockPos {
     pub fn to_vec3(&self) -> Vec3 {
         IVec3::new(self.x, self.y, self.z).as_dvec3()
     }
+
+    /// The block next to this one in `direction`.
+    pub const fn offset(self, direction: Direction) -> Self {
+        let (x, y, z) = direction.offset();
+        Self::new(self.x + x, self.y + y, self.z + z)
+    }
+}
+
+/// One of the six faces of a block, numbered as on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Direction {
+    /// Towards y − 1.
+    Down,
+    /// Towards y + 1.
+    Up,
+    /// Towards z − 1.
+    North,
+    /// Towards z + 1.
+    South,
+    /// Towards x − 1.
+    West,
+    /// Towards x + 1.
+    East,
+}
+
+impl Direction {
+    /// The direction with wire id `id`.
+    pub const fn from_id(id: i32) -> Option<Self> {
+        Some(match id {
+            0 => Self::Down,
+            1 => Self::Up,
+            2 => Self::North,
+            3 => Self::South,
+            4 => Self::West,
+            5 => Self::East,
+            _ => return None,
+        })
+    }
+
+    /// The wire id.
+    pub const fn id(self) -> u8 {
+        self as u8
+    }
+
+    /// The step one block takes in this direction, as `(x, y, z)`.
+    pub const fn offset(self) -> (i32, i32, i32) {
+        match self {
+            Self::Down => (0, -1, 0),
+            Self::Up => (0, 1, 0),
+            Self::North => (0, 0, -1),
+            Self::South => (0, 0, 1),
+            Self::West => (-1, 0, 0),
+            Self::East => (1, 0, 0),
+        }
+    }
 }
 
 impl Encode for BlockPos {
@@ -145,6 +200,30 @@ impl Decode for BlockPos {
 mod tests {
     use super::*;
     use crate::codec::tests::{encoded, roundtrip};
+
+    #[test]
+    fn directions_are_numbered_as_on_the_wire() {
+        // from the 26.3 `Direction` enum: down, up, north, south, west, east
+        let steps = [
+            (0, (0, -1, 0)),
+            (1, (0, 1, 0)),
+            (2, (0, 0, -1)),
+            (3, (0, 0, 1)),
+            (4, (-1, 0, 0)),
+            (5, (1, 0, 0)),
+        ];
+        for (id, step) in steps {
+            let d = Direction::from_id(id).unwrap();
+            assert_eq!(i32::from(d.id()), id);
+            assert_eq!(d.offset(), step);
+        }
+        assert_eq!(Direction::from_id(6), None);
+        assert_eq!(Direction::from_id(-1), None);
+        assert_eq!(
+            BlockPos::new(1, 2, 3).offset(Direction::North),
+            BlockPos::new(1, 2, 2)
+        );
+    }
 
     #[test]
     fn block_pos_packs_fields_in_place() {
