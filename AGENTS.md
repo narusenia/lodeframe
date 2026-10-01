@@ -15,6 +15,7 @@ lodeframe は Rust 製の軽量 Minecraft: Java Edition サーバー**ライブ�
 - `crates/lodeframe-text`: Component と MiniMessage パーサ
 - `crates/lodeframe-protocol`: 基本型・Encode/Decode・NBT・パケット・生成データ。本体に依存しない
 - `crates/lodeframe-macros`: proc-macro
+- `crates/lodeframe-bot`: protocol だけで書いた軽量ボット（統合テストと負荷試験）
 - `crates/lodeframe`: 本体。上の 3 つを re-export する facade
 - `xtask`: 開発タスク（datagen / bot / bench）
 - `examples/lobby`: イベント API だけで書いたロビー
