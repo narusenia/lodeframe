@@ -25,8 +25,14 @@ pub const TICK: Duration = Duration::from_millis(50);
 pub const MAX_BEHIND: Duration = Duration::from_secs(2);
 /// Messages waiting for an instance before senders have to wait.
 const INBOX: usize = 4096;
-/// Packets waiting for one client before it is cut off.
+/// Messages of [`Packets`] waiting for one client before it is cut off.
 pub const OUTBOX: usize = 256;
+
+/// Packet bodies (id followed by payload) for one connection, to be written in this order.
+///
+/// An instance sends a connection one of these at a time. A group counts as one message in
+/// the connection's queue of [`OUTBOX`], however many packets are in it.
+pub type Packets = Vec<Vec<u8>>;
 
 /// Something that can be ticked. Implement this for your world.
 pub trait Instance {
@@ -44,7 +50,7 @@ pub enum Message {
         /// Who joined.
         profile: Profile,
         /// Bodies (packet id + payload) for the client; see [`Sessions`].
-        outbound: mpsc::Sender<Vec<u8>>,
+        outbound: mpsc::Sender<Packets>,
     },
     /// A packet from a player: id and payload.
     Packet {
@@ -66,12 +72,12 @@ pub enum Message {
 /// connection, instead of holding up the tick loop.
 #[derive(Debug, Default)]
 pub struct Sessions {
-    outbound: HashMap<Uuid, mpsc::Sender<Vec<u8>>>,
+    outbound: HashMap<Uuid, mpsc::Sender<Packets>>,
 }
 
 impl Sessions {
     /// Registers a player.
-    pub fn join(&mut self, player: Uuid, outbound: mpsc::Sender<Vec<u8>>) {
+    pub fn join(&mut self, player: Uuid, outbound: mpsc::Sender<Packets>) {
         self.outbound.insert(player, outbound);
     }
 
@@ -83,10 +89,16 @@ impl Sessions {
     /// Sends `body` to `player`. Returns `false`, having dropped the player, if their
     /// channel is full or closed.
     pub fn send(&mut self, player: Uuid, body: Vec<u8>) -> bool {
+        self.send_all(player, vec![body])
+    }
+
+    /// Sends `packets` to `player` as one message. Returns `false`, having dropped the player,
+    /// if their channel is full or closed.
+    pub fn send_all(&mut self, player: Uuid, packets: Packets) -> bool {
         let Some(tx) = self.outbound.get(&player) else {
             return false;
         };
-        if tx.try_send(body).is_ok() {
+        if tx.try_send(packets).is_ok() {
             return true;
         }
         tracing::warn!(%player, "dropping player: outbound channel full or closed");

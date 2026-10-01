@@ -12,7 +12,7 @@ use tokio::{
 };
 
 use crate::{
-    instance::{InstanceHandle, Message, OUTBOX},
+    instance::{InstanceHandle, Message, OUTBOX, Packets},
     login::Profile,
     net::{Connection, is_disconnect},
     protocol::{Error, Result, State, ids, packets::play::KeepAlive, split_packet_id},
@@ -21,6 +21,9 @@ use crate::{
 /// How often a keepalive goes out. The connection's read timeout then acts as the client
 /// timeout: a client that stops answering is dropped when the timeout passes.
 const KEEP_ALIVE_EVERY: Duration = Duration::from_secs(15);
+
+/// The most packets written in one go, beyond which the rest waits for the next write.
+const MAX_FRAMES_AT_ONCE: usize = 1024;
 
 /// Joins `profile` to `instance` and relays packets both ways until the connection ends.
 ///
@@ -36,7 +39,7 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
     }
     let player = profile.uuid;
     let name = profile.name.clone();
-    let (outbound, mut from_instance) = mpsc::channel::<Vec<u8>>(OUTBOX);
+    let (outbound, mut from_instance) = mpsc::channel::<Packets>(OUTBOX);
     instance
         .send(Message::Join { profile, outbound })
         .await
@@ -61,7 +64,7 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin>(
     conn: &mut Connection<S>,
     instance: &InstanceHandle,
     player: crate::protocol::Uuid,
-    from_instance: &mut mpsc::Receiver<Vec<u8>>,
+    from_instance: &mut mpsc::Receiver<Packets>,
 ) -> Result<()> {
     let mut keep_alive = interval_at(Instant::now() + KEEP_ALIVE_EVERY, KEEP_ALIVE_EVERY);
     keep_alive.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -82,10 +85,10 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin>(
             body = from_instance.recv() => match body {
                 Some(first) => {
                     // everything that is already waiting goes out in one write
-                    let mut batch = vec![first];
-                    while batch.len() < OUTBOX {
+                    let mut batch = first;
+                    while batch.len() < MAX_FRAMES_AT_ONCE {
                         let Ok(next) = from_instance.try_recv() else { break };
-                        batch.push(next);
+                        batch.extend(next);
                     }
                     conn.write_frames(&batch).await?;
                 }

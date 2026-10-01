@@ -48,7 +48,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     event::{Event, EventNode},
-    instance::{Instance, Message},
+    instance::{Instance, Message, Packets},
     login::Profile,
     protocol::{Decode, Encode, Packet, Result, Uuid, packet_body, split_packet_id},
 };
@@ -126,7 +126,7 @@ impl<I: Instance> TestEnv<I> {
 #[derive(Debug)]
 pub struct FakePlayer {
     uuid: Uuid,
-    inbox: mpsc::Receiver<Vec<u8>>,
+    inbox: mpsc::Receiver<Packets>,
 }
 
 impl FakePlayer {
@@ -138,8 +138,18 @@ impl FakePlayer {
     /// Everything sent since the last call, oldest first.
     pub fn drain(&mut self) -> Vec<Received> {
         let mut out = Vec::new();
-        while let Ok(body) = self.inbox.try_recv() {
-            out.push(Received::new(body));
+        while let Ok(packets) = self.inbox.try_recv() {
+            out.extend(packets.into_iter().map(Received::new));
+        }
+        out
+    }
+
+    /// Like [`drain`](Self::drain), keeping the messages apart: the packets the instance sent in
+    /// one go (for instance all the moves of a tick) come together, oldest message first.
+    pub fn drain_messages(&mut self) -> Vec<Vec<Received>> {
+        let mut out = Vec::new();
+        while let Ok(packets) = self.inbox.try_recv() {
+            out.push(packets.into_iter().map(Received::new).collect());
         }
         out
     }
