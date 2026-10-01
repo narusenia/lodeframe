@@ -4,17 +4,19 @@
 use lodeframe::{
     chunk::FlatGenerator,
     protocol::{
-        Vec3,
+        Encode, Vec3,
         ids::play::{clientbound as out, serverbound},
         packets::play::{
-            AddEntity, EntityPositionSync, ForgetLevelChunk, INPUT_SNEAK, Login, MovePlayerPos,
-            MovePlayerPosRot, MovePlayerRot, PlayerInfoAdd, PlayerInfoRemove, PlayerInput,
-            PlayerPosition, RemoveEntities, RotateHead, SetChunkCacheCenter, SetEntityFlagsAndPose,
+            AddEntity, Chat, DisguisedChat, EntityPositionSync, ForgetLevelChunk, INPUT_SNEAK,
+            Login, MovePlayerPos, MovePlayerPosRot, MovePlayerRot, PlayerInfoAdd, PlayerInfoRemove,
+            PlayerInput, PlayerPosition, RemoveEntities, RotateHead, SetChunkCacheCenter,
+            SetEntityFlagsAndPose, SystemChat,
         },
     },
     registry::Registries,
-    test_util::{Received, TestEnv},
-    world::World,
+    test_util::{FakePlayer, Received, Recorder, TestEnv},
+    text::{Color, Component},
+    world::{ChatEvent, World},
 };
 
 fn count(received: &[Received], id: i32) -> usize {
@@ -204,4 +206,168 @@ fn movement_look_and_sneaking_reach_the_other_player_only() {
     env.send(&alex, &PlayerInput { flags: 0 });
     let stand: Vec<SetEntityFlagsAndPose> = steve.drain_as();
     assert_eq!((stand[0].flags, stand[0].pose.0), (0, 0));
+}
+
+fn say(env: &mut TestEnv<World<FlatGenerator>>, who: &FakePlayer, text: &str) {
+    env.send(
+        who,
+        &Chat {
+            message: text.into(),
+        },
+    );
+}
+
+/// The payload of the `DisguisedChat` a vanilla player gets for `message` from `name`.
+fn chat_line(name: &str, message: Component) -> Vec<u8> {
+    let chat_type = Registries::vanilla()
+        .network_id("minecraft:chat_type", "minecraft:chat")
+        .unwrap();
+    let mut out = Vec::new();
+    DisguisedChat {
+        message,
+        // the holder id is the registry id plus one
+        chat_type: lodeframe::protocol::VarInt(chat_type as i32 + 1),
+        name: Component::text(name),
+        target_name: None,
+    }
+    .encode(&mut out)
+    .unwrap();
+    out
+}
+
+fn chat_lines(player: &mut FakePlayer) -> Vec<Received> {
+    player
+        .drain()
+        .into_iter()
+        .filter(|r| r.id == out::DISGUISED_CHAT)
+        .collect()
+}
+
+fn two_players() -> (TestEnv<World<FlatGenerator>>, FakePlayer, FakePlayer) {
+    let mut env = env();
+    let mut steve = env.connect("Steve");
+    let mut alex = env.connect("Alex");
+    steve.drain();
+    alex.drain();
+    (env, steve, alex)
+}
+
+#[test]
+fn a_chat_line_reaches_everyone_including_the_sender() {
+    let (mut env, mut steve, mut alex) = two_players();
+    let seen = Recorder::<ChatEvent>::attach(env.instance_mut().events_mut());
+
+    say(&mut env, &steve, "hello");
+
+    for player in [&mut steve, &mut alex] {
+        let lines = chat_lines(player);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(
+            lines[0].payload(),
+            chat_line("Steve", Component::text("hello"))
+        );
+    }
+    let events = seen.take();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].player, steve.uuid());
+    assert_eq!(events[0].name, "Steve");
+    assert_eq!(events[0].message, Component::text("hello"));
+}
+
+#[test]
+fn a_cancelled_chat_line_reaches_nobody() {
+    let (mut env, mut steve, mut alex) = two_players();
+    env.instance_mut()
+        .events_mut()
+        .on(|e: &mut ChatEvent, _| e.cancel());
+
+    say(&mut env, &steve, "hello");
+
+    assert!(chat_lines(&mut steve).is_empty());
+    assert!(chat_lines(&mut alex).is_empty());
+}
+
+#[test]
+fn a_handler_can_replace_the_message_with_a_styled_one() {
+    let (mut env, mut steve, mut alex) = two_players();
+    let styled = Component::text("[vip] hello").color(Color::Red).bold();
+    let replacement = styled.clone();
+    env.instance_mut()
+        .events_mut()
+        .on(move |e: &mut ChatEvent, _| e.message = replacement.clone());
+
+    say(&mut env, &steve, "hello");
+
+    for player in [&mut steve, &mut alex] {
+        let lines = chat_lines(player);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].payload(), chat_line("Steve", styled.clone()));
+    }
+}
+
+#[test]
+fn a_handler_can_act_on_the_world() {
+    let (mut env, mut steve, mut alex) = two_players();
+    env.instance_mut()
+        .events_mut()
+        .on(|e: &mut ChatEvent, world: &mut World<FlatGenerator>| {
+            e.cancel();
+            world.send_message(e.player, &Component::text("chat is closed"));
+        });
+
+    say(&mut env, &steve, "hello");
+
+    let told = steve.drain();
+    assert_eq!(count(&told, out::SYSTEM_CHAT), 1);
+    assert_eq!(count(&told, out::DISGUISED_CHAT), 0);
+    assert!(alex.drain().is_empty());
+}
+
+#[test]
+fn lines_the_game_would_not_send_are_ignored() {
+    let (mut env, mut steve, mut alex) = two_players();
+
+    for line in ["", &"a".repeat(257), "a\u{7}b", "\u{a7}cred", "a\u{7f}"] {
+        say(&mut env, &steve, line);
+    }
+    // the longest line is fine
+    say(&mut env, &steve, &"a".repeat(256));
+
+    assert_eq!(chat_lines(&mut alex).len(), 1);
+    assert!(!steve.is_disconnected());
+}
+
+#[test]
+fn a_command_is_not_chat() {
+    let (mut env, steve, mut alex) = two_players();
+    let mut body = vec![serverbound::CHAT_COMMAND as u8, 6];
+    body.extend(b"say hi");
+
+    env.send_raw(&steve, body);
+
+    assert!(alex.drain().is_empty());
+}
+
+#[test]
+fn server_messages_go_to_one_player_or_everyone() {
+    let (mut env, mut steve, mut alex) = two_players();
+    let note = Component::text("welcome").color(Color::Gold);
+
+    env.instance_mut().send_message(steve.uuid(), &note);
+    assert_eq!(count(&steve.drain(), out::SYSTEM_CHAT), 1);
+    assert!(alex.drain().is_empty());
+
+    env.instance_mut().broadcast(&note);
+    let sent = steve.drain();
+    assert_eq!(count(&sent, out::SYSTEM_CHAT), 1);
+    assert_eq!(count(&alex.drain(), out::SYSTEM_CHAT), 1);
+
+    let mut expected = Vec::new();
+    SystemChat {
+        content: note,
+        overlay: false,
+    }
+    .encode(&mut expected)
+    .unwrap();
+    assert_eq!(sent[0].payload(), expected);
 }

@@ -180,6 +180,11 @@ impl Received {
         }
     }
 
+    /// The bytes after the packet id, for packets that cannot be decoded.
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+
     /// Whether this is a `P`, judging by the id.
     pub fn is<P: Packet>(&self) -> bool {
         self.id == P::ID
