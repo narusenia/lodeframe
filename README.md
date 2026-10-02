@@ -1,4 +1,6 @@
-# lodeframe
+<p align="center">
+  <img src="assets/logotype.png" alt="lodeframe" width="500">
+</p>
 
 English | [日本語](README.ja.md)
 
