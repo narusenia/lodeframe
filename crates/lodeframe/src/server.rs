@@ -16,7 +16,7 @@
 
 use std::{
     io,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     sync::{
         Arc,
         atomic::{AtomicU32, Ordering},
@@ -71,6 +71,20 @@ pub enum Forwarding {
         /// The secret shared with the proxy.
         secret: Vec<u8>,
     },
+    /// BungeeCord legacy forwarding. Nothing signs what the proxy forwards, so only
+    /// connections from `trusted` (the proxies' addresses, as the server sees them) are
+    /// believed, and `trusted` must not be empty.
+    BungeeCord {
+        /// The addresses the proxies connect from.
+        trusted: Vec<IpAddr>,
+    },
+    /// BungeeCord forwarding with BungeeGuard: connections are believed when they carry one of
+    /// `tokens`, wherever they come from. Several tokens let an old and a new one work while
+    /// they are being swapped. `tokens` must not be empty, nor hold an empty token.
+    BungeeGuard {
+        /// The tokens the proxies send.
+        tokens: Vec<String>,
+    },
 }
 
 impl std::fmt::Debug for Forwarding {
@@ -79,6 +93,11 @@ impl std::fmt::Debug for Forwarding {
         match self {
             Self::None => f.write_str("None"),
             Self::Velocity { .. } => f.write_str("Velocity { secret: .. }"),
+            Self::BungeeCord { trusted } => f
+                .debug_struct("BungeeCord")
+                .field("trusted", trusted)
+                .finish(),
+            Self::BungeeGuard { .. } => f.write_str("BungeeGuard { tokens: .. }"),
         }
     }
 }
@@ -233,8 +252,19 @@ impl Server {
         if self.keep_alive.timeout <= self.keep_alive.interval {
             return invalid("the keep alive timeout must be longer than its interval");
         }
-        if matches!(&self.forwarding, Forwarding::Velocity { secret } if secret.is_empty()) {
-            return invalid("the forwarding secret must not be empty");
+        match &self.forwarding {
+            Forwarding::Velocity { secret } if secret.is_empty() => {
+                return invalid("the forwarding secret must not be empty");
+            }
+            Forwarding::BungeeCord { trusted } if trusted.is_empty() => {
+                return invalid("the trusted proxy addresses must not be empty");
+            }
+            Forwarding::BungeeGuard { tokens }
+                if tokens.is_empty() || tokens.iter().any(String::is_empty) =>
+            {
+                return invalid("the BungeeGuard tokens must not be empty");
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -307,7 +337,7 @@ impl Server {
             {
                 let instance = instance.clone();
                 let slots = slots.clone();
-                move |mut conn, intention| {
+                move |mut conn, intention, peer| {
                     let (registries, instance, options, slots) = (
                         registries.clone(),
                         instance.clone(),
@@ -331,6 +361,25 @@ impl Server {
                                     threshold,
                                     secret,
                                     options.forwarding_timeout,
+                                )
+                                .await?
+                            }
+                            Forwarding::BungeeCord { trusted } => {
+                                login::bungeecord(
+                                    &mut conn,
+                                    threshold,
+                                    &intention.server_address,
+                                    peer.ip(),
+                                    trusted,
+                                )
+                                .await?
+                            }
+                            Forwarding::BungeeGuard { tokens } => {
+                                login::bungeeguard(
+                                    &mut conn,
+                                    threshold,
+                                    &intention.server_address,
+                                    tokens,
                                 )
                                 .await?
                             }

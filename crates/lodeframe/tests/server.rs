@@ -19,7 +19,7 @@ use lodeframe::{
     server::{Forwarding, RunningServer, Server},
     world::{Ctx, PlayerJoinEvent, PluginMessageEvent, World},
 };
-use lodeframe_bot::{Bot, Velocity};
+use lodeframe_bot::{Bot, Bungee, Velocity};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -327,10 +327,15 @@ fn skin() -> ProfileProperty {
 /// A server behind a proxy that signs with `SECRET`; it tells every player who joins the address
 /// and the skin it knows them by, on `test:who`.
 async fn start_behind_proxy() -> RunningServer {
+    start_behind(Forwarding::Velocity {
+        secret: SECRET.to_vec(),
+    })
+    .await
+}
+
+async fn start_behind(forwarding: Forwarding) -> RunningServer {
     Server::new("127.0.0.1:0")
-        .forwarding(Forwarding::Velocity {
-            secret: SECRET.to_vec(),
-        })
+        .forwarding(forwarding)
         .forwarding_timeout(Duration::from_millis(300))
         .start(|registries: &Registries| {
             let mut world = World::new(registries, FlatGenerator::default());
@@ -455,4 +460,183 @@ async fn an_empty_secret_does_not_start() {
         .await;
 
     assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+}
+
+const TOKEN: &str = "0123456789abcdef";
+
+fn loopback() -> std::net::IpAddr {
+    std::net::Ipv4Addr::LOCALHOST.into()
+}
+
+/// What the `test:who` message of a player says, once the player has joined.
+async fn who(bot: &mut Bot<TcpStream>) -> Vec<u8> {
+    bot.recv_until(Duration::from_secs(10), |frame| {
+        let message = frame.decode::<ClientboundCustomPayload>().ok()?;
+        (frame.is::<ClientboundCustomPayload>() && message.channel.as_str() == "test:who")
+            .then_some(message.data)
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bot_behind_bungeecord_joins_as_the_player_the_proxy_names() {
+    let server = start_behind(Forwarding::BungeeCord {
+        trusted: vec![loopback()],
+    })
+    .await;
+    let mut proxy = Bungee::new(lodeframe::protocol::Uuid(0xabcd));
+    proxy.address = "198.51.100.9".into();
+    proxy.properties = vec![skin()];
+
+    let mut steve = Bot::connect_bungee(server.addr(), "Steve", proxy)
+        .await
+        .unwrap();
+
+    assert_eq!(steve.uuid(), lodeframe::protocol::Uuid(0xabcd));
+    assert_eq!(who(&mut steve).await, b"Some(198.51.100.9) 1");
+
+    // the next player sees the skin in the tab list
+    let mut alex = Bot::connect_bungee(
+        server.addr(),
+        "Alex",
+        Bungee::new(lodeframe::protocol::Uuid(0x1111)),
+    )
+    .await
+    .unwrap();
+    let skins = alex
+        .recv_until(Duration::from_secs(10), |frame| {
+            let list = frame.decode::<PlayerInfoAdd>().ok()?;
+            let steve = list.players.into_iter().find(|p| p.name == "Steve")?;
+            frame.is::<PlayerInfoAdd>().then_some(steve.properties)
+        })
+        .await
+        .unwrap();
+    assert_eq!(skins, [skin()]);
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bungeecord_turns_away_a_connection_that_is_not_from_a_trusted_proxy() {
+    let server = start_behind(Forwarding::BungeeCord {
+        trusted: vec!["203.0.113.1".parse().unwrap()],
+    })
+    .await;
+
+    // the bot comes from 127.0.0.1, whatever address it says the player has
+    let mut proxy = Bungee::new(lodeframe::protocol::Uuid(1));
+    proxy.address = "203.0.113.1".into();
+    assert!(
+        Bot::connect_bungee(server.addr(), "Steve", proxy)
+            .await
+            .is_err()
+    );
+    wait_for_online(&server, 0).await;
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bungeecord_turns_away_a_client_that_forwards_nothing() {
+    let server = start_behind(Forwarding::BungeeCord {
+        trusted: vec![loopback()],
+    })
+    .await;
+
+    // trusted, but the address is the plain one a player typed
+    assert!(Bot::connect(server.addr(), "Steve").await.is_err());
+    wait_for_online(&server, 0).await;
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bungeecord_turns_away_addresses_that_are_written_wrong() {
+    let server = start_behind(Forwarding::BungeeCord {
+        trusted: vec![loopback()],
+    })
+    .await;
+    let uuid = "00000000000000000000000000000001";
+    for raw in [
+        format!("localhost\x00127.0.0.1\0{uuid}\0[]\0more"),
+        format!("localhost\0not an address\0{uuid}\0[]"),
+        "localhost\x00127.0.0.1\0abcd\0[]".to_owned(),
+        format!("localhost\x00127.0.0.1\0+{}\0[]", &uuid[1..]),
+        format!("localhost\x00127.0.0.1\0{uuid}\0{{}}"),
+        format!("localhost\x00127.0.0.1\0{uuid}\0[{{\"name\":\"textures\"}}]"),
+    ] {
+        let mut proxy = Bungee::new(lodeframe::protocol::Uuid(1));
+        proxy.raw = Some(raw.clone());
+        assert!(
+            Bot::connect_bungee(server.addr(), "Steve", proxy)
+                .await
+                .is_err(),
+            "{raw:?}"
+        );
+    }
+    wait_for_online(&server, 0).await;
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bot_with_a_bungeeguard_token_joins_and_the_token_goes_no_further() {
+    let server = start_behind(Forwarding::BungeeGuard {
+        tokens: vec!["an old token".into(), TOKEN.into()],
+    })
+    .await;
+    let mut proxy = Bungee::new(lodeframe::protocol::Uuid(0xabcd));
+    proxy.properties = vec![skin()];
+    proxy.token = Some(TOKEN.into());
+
+    let mut steve = Bot::connect_bungee(server.addr(), "Steve", proxy)
+        .await
+        .unwrap();
+
+    assert_eq!(steve.uuid(), lodeframe::protocol::Uuid(0xabcd));
+    // the skin only: the token is not a property of the profile
+    assert_eq!(who(&mut steve).await, b"Some(127.0.0.1) 1");
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bungeeguard_turns_away_a_missing_or_wrong_token() {
+    let server = start_behind(Forwarding::BungeeGuard {
+        tokens: vec![TOKEN.into()],
+    })
+    .await;
+    for token in [
+        None,
+        Some("fedcba9876543210"),
+        Some("0123456789abcde"),
+        Some(""),
+    ] {
+        let mut proxy = Bungee::new(lodeframe::protocol::Uuid(1));
+        proxy.token = token.map(Into::into);
+        assert!(
+            Bot::connect_bungee(server.addr(), "Steve", proxy)
+                .await
+                .is_err(),
+            "{token:?}"
+        );
+    }
+    wait_for_online(&server, 0).await;
+    server.stop();
+}
+
+#[tokio::test]
+async fn an_empty_trusted_list_or_token_does_not_start() {
+    for forwarding in [
+        Forwarding::BungeeCord {
+            trusted: Vec::new(),
+        },
+        Forwarding::BungeeGuard { tokens: Vec::new() },
+        Forwarding::BungeeGuard {
+            tokens: vec![TOKEN.into(), String::new()],
+        },
+    ] {
+        let result = Server::new("127.0.0.1:0")
+            .forwarding(forwarding)
+            .start(|registries: &Registries| World::new(registries, FlatGenerator::default()))
+            .await;
+
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+    }
 }

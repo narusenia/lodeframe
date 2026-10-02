@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
-//! Login without authentication: offline mode, where the UUID comes from the name, and
-//! Velocity modern forwarding, where a proxy that shares a secret says who the player is.
+//! Login without authentication: offline mode, where the UUID comes from the name, and the
+//! proxy forwardings, where a proxy says who the player is: Velocity modern forwarding signed
+//! with a shared secret, and BungeeCord legacy forwarding, which is not signed at all.
 
 use std::{io, net::IpAddr, time::Duration};
 
@@ -51,15 +52,7 @@ pub async fn offline<S: AsyncRead + AsyncWrite + Unpin>(
     if hello.name.is_empty() || hello.name.chars().count() > 16 {
         return Err(Error::InvalidValue("player name length"));
     }
-    if let Some(threshold) = compression_threshold {
-        let threshold =
-            i32::try_from(threshold).map_err(|_| Error::InvalidValue("compression threshold"))?;
-        conn.write_packet(&LoginCompression {
-            threshold: VarInt(threshold),
-        })
-        .await?;
-        conn.set_compression(Some(threshold as usize));
-    }
+    compress(conn, compression_threshold).await?;
     let profile = Profile {
         uuid: Uuid::offline(&hello.name),
         name: hello.name,
@@ -133,6 +126,12 @@ const MAX_PROPERTIES: usize = 64;
 const MAX_NAME: usize = 16;
 const NOT_PROXIED: &str = "This server requires you to connect with Velocity.";
 const NOT_VERIFIED: &str = "Unable to verify player details";
+const NOT_BUNGEE: &str = "This server requires you to connect with BungeeCord.";
+/// The property BungeeGuard puts its token in.
+const BUNGEEGUARD_TOKEN: &str = "bungeeguard-token";
+const MAX_PROPERTY_NAME: usize = 64;
+const MAX_PROPERTY_VALUE: usize = 32767;
+const MAX_PROPERTY_SIGNATURE: usize = 1024;
 
 /// Runs Velocity modern forwarding on a connection in [`State::Login`] and leaves it in
 /// [`State::Configuration`]: asks the proxy who the player is, checks the answer against
@@ -152,15 +151,7 @@ pub async fn velocity<S: AsyncRead + AsyncWrite + Unpin>(
     }
     // the name here is the proxy's own view; the forwarded one replaces it
     conn.read_packet::<Hello>().await?;
-    if let Some(threshold) = compression_threshold {
-        let threshold =
-            i32::try_from(threshold).map_err(|_| Error::InvalidValue("compression threshold"))?;
-        conn.write_packet(&LoginCompression {
-            threshold: VarInt(threshold),
-        })
-        .await?;
-        conn.set_compression(Some(threshold as usize));
-    }
+    compress(conn, compression_threshold).await?;
     let channel = Identifier::new(VELOCITY_CHANNEL)?;
     let asked = Queries::default()
         .ask(conn, channel, &[VELOCITY_VERSION as u8], limit)
@@ -177,6 +168,31 @@ pub async fn velocity<S: AsyncRead + AsyncWrite + Unpin>(
         Ok(profile) => profile,
         Err(why) => return refuse(conn, NOT_VERIFIED, why).await,
     };
+    finish(conn, profile).await
+}
+
+/// Turns compression on when asked, before the profile is sent.
+async fn compress<S: AsyncRead + AsyncWrite + Unpin>(
+    conn: &mut Connection<S>,
+    threshold: Option<usize>,
+) -> Result<()> {
+    if let Some(threshold) = threshold {
+        let threshold =
+            i32::try_from(threshold).map_err(|_| Error::InvalidValue("compression threshold"))?;
+        conn.write_packet(&LoginCompression {
+            threshold: VarInt(threshold),
+        })
+        .await?;
+        conn.set_compression(Some(threshold as usize));
+    }
+    Ok(())
+}
+
+/// Accepts `profile`, waits for the client to acknowledge and moves to configuration.
+async fn finish<S: AsyncRead + AsyncWrite + Unpin>(
+    conn: &mut Connection<S>,
+    profile: Profile,
+) -> Result<Profile> {
     conn.write_packet(&LoginFinished {
         uuid: profile.uuid,
         name: profile.name.clone(),
@@ -204,6 +220,185 @@ async fn refuse<S: AsyncRead + AsyncWrite + Unpin, T>(
         })
         .await;
     Err(Error::InvalidValue(why))
+}
+
+/// Runs BungeeCord legacy forwarding on a connection in [`State::Login`] and leaves it in
+/// [`State::Configuration`]: the player is who the proxy wrote into `address`, the server
+/// address of the handshake.
+///
+/// Nothing signs that address, so anyone who can connect can write one. Only a connection
+/// whose `peer` (the socket address it came from, not anything it forwarded) is in `trusted`
+/// is believed; any other is told so before anything is read from it.
+pub async fn bungeecord<S: AsyncRead + AsyncWrite + Unpin>(
+    conn: &mut Connection<S>,
+    compression_threshold: Option<usize>,
+    address: &str,
+    peer: IpAddr,
+    trusted: &[IpAddr],
+) -> Result<Profile> {
+    legacy(
+        conn,
+        compression_threshold,
+        address,
+        Trust::Peer { peer, trusted },
+    )
+    .await
+}
+
+/// Runs BungeeCord legacy forwarding with BungeeGuard on a connection in [`State::Login`] and
+/// leaves it in [`State::Configuration`]: like [`bungeecord`], but the connection is believed
+/// when the token the proxy forwarded is one of `tokens`, wherever it came from.
+///
+/// The token is not part of the resulting profile.
+pub async fn bungeeguard<S: AsyncRead + AsyncWrite + Unpin>(
+    conn: &mut Connection<S>,
+    compression_threshold: Option<usize>,
+    address: &str,
+    tokens: &[String],
+) -> Result<Profile> {
+    legacy(conn, compression_threshold, address, Trust::Tokens(tokens)).await
+}
+
+/// What makes a legacy forwarding believable.
+enum Trust<'a> {
+    Peer { peer: IpAddr, trusted: &'a [IpAddr] },
+    Tokens(&'a [String]),
+}
+
+async fn legacy<S: AsyncRead + AsyncWrite + Unpin>(
+    conn: &mut Connection<S>,
+    compression_threshold: Option<usize>,
+    address: &str,
+    trust: Trust<'_>,
+) -> Result<Profile> {
+    if conn.state() != State::Login {
+        return Err(Error::InvalidValue("not in the login state"));
+    }
+    // before reading anything from a source that nothing vouches for
+    // `::ffff:127.0.0.1` on a dual-stack socket is 127.0.0.1
+    if let Trust::Peer { peer, trusted } = &trust
+        && !trusted
+            .iter()
+            .any(|t| t.to_canonical() == peer.to_canonical())
+    {
+        return refuse(
+            conn,
+            NOT_BUNGEE,
+            "the connection is not from a trusted proxy",
+        )
+        .await;
+    }
+    let hello: Hello = conn.read_packet().await?;
+    if hello.name.is_empty() || hello.name.chars().count() > MAX_NAME {
+        return Err(Error::InvalidValue("player name length"));
+    }
+    compress(conn, compression_threshold).await?;
+    let (remote_addr, uuid, mut properties) = match legacy_address(address) {
+        Ok(forwarded) => forwarded,
+        Err(why) => return refuse(conn, NOT_VERIFIED, why).await,
+    };
+    // the token is the proxy's secret: it never goes on to the profile, whatever the trust
+    let mut presented = Vec::new();
+    properties.retain(|p| {
+        let token = p.name == BUNGEEGUARD_TOKEN;
+        if token {
+            presented.push(p.value.clone());
+        }
+        !token
+    });
+    if let Trust::Tokens(tokens) = trust
+        && !presented.iter().any(|given| token_matches(tokens, given))
+    {
+        return refuse(
+            conn,
+            NOT_VERIFIED,
+            "the BungeeGuard token is missing or wrong",
+        )
+        .await;
+    }
+    finish(
+        conn,
+        Profile {
+            uuid,
+            name: hello.name,
+            properties,
+            remote_addr: Some(remote_addr),
+        },
+    )
+    .await
+}
+
+/// Reads `host\0ip\0uuid[\0properties]`, the server address a BungeeCord proxy writes.
+fn legacy_address(
+    address: &str,
+) -> std::result::Result<(IpAddr, Uuid, Vec<ProfileProperty>), &'static str> {
+    let parts: Vec<&str> = address.split('\0').collect();
+    let (ip, uuid, properties) = match parts[..] {
+        [_, ip, uuid] => (ip, uuid, None),
+        [_, ip, uuid, properties] => (ip, uuid, Some(properties)),
+        _ => return Err("forwarded address is not host, address, UUID and properties"),
+    };
+    // a scope id (`fe80::1%eth0`) is the proxy's own interface, which means nothing here
+    let remote_addr = ip
+        .split('%')
+        .next()
+        .unwrap_or_default()
+        .parse::<IpAddr>()
+        .map_err(|_| "forwarded address is not an IP address")?;
+    // `from_str_radix` would take a sign, so look at the digits first
+    if uuid.len() != 32 || !uuid.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("forwarded UUID is not 32 hex digits");
+    }
+    let uuid = Uuid(u128::from_str_radix(uuid, 16).map_err(|_| "forwarded UUID")?);
+    let properties = match properties {
+        Some(json) => legacy_properties(json)?,
+        None => Vec::new(),
+    };
+    Ok((remote_addr, uuid, properties))
+}
+
+/// Reads `[{"name":..,"value":..,"signature":..}]`; the signature may be missing or empty.
+fn legacy_properties(json: &str) -> std::result::Result<Vec<ProfileProperty>, &'static str> {
+    use serde_json::Value;
+
+    let bad = "forwarded properties malformed";
+    let Value::Array(items) = serde_json::from_str(json).map_err(|_| bad)? else {
+        return Err(bad);
+    };
+    if items.len() > MAX_PROPERTIES {
+        return Err("too many forwarded properties");
+    }
+    let text = |item: &Value, key: &str, max: usize| match item.get(key) {
+        Some(Value::String(s)) if s.encode_utf16().count() <= max => Ok(Some(s.clone())),
+        None | Some(Value::Null) => Ok(None),
+        _ => Err(bad),
+    };
+    items
+        .iter()
+        .map(|item| {
+            Ok(ProfileProperty {
+                name: text(item, "name", MAX_PROPERTY_NAME)?.ok_or(bad)?,
+                value: text(item, "value", MAX_PROPERTY_VALUE)?.ok_or(bad)?,
+                signature: text(item, "signature", MAX_PROPERTY_SIGNATURE)?
+                    .filter(|s| !s.is_empty()),
+            })
+        })
+        .collect()
+}
+
+/// Whether `given` is one of `tokens`, in constant time for the tokens' bytes: every token is
+/// compared, and no byte stops a comparison early. Only a length that differs is quick, and a
+/// token's length is not a secret.
+fn token_matches(tokens: &[String], given: &str) -> bool {
+    let given = given.as_bytes();
+    let mut found = 0u8;
+    for token in tokens {
+        let token = token.as_bytes();
+        let same = token.len() == given.len()
+            && token.iter().zip(given).fold(0u8, |d, (a, b)| d | (a ^ b)) == 0;
+        found |= u8::from(same);
+    }
+    found == 1
 }
 
 /// Checks the signature of what the proxy answered and reads the player out of it.

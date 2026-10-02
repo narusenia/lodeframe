@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Connections: accept, frame, and sort by handshake.
 
-use std::{future::Future, io, sync::Arc, time::Duration};
+use std::{future::Future, io, net::SocketAddr, sync::Arc, time::Duration};
 
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -156,14 +156,15 @@ pub(crate) fn is_disconnect(e: &Error) -> bool {
     matches!(e, Error::Io(e) if matches!(e.kind(), UnexpectedEof | ConnectionReset | ConnectionAborted | BrokenPipe | TimedOut))
 }
 
-/// Accepts connections forever, running `handler` for each one after its handshake.
+/// Accepts connections forever, running `handler` for each one after its handshake, with the
+/// address the connection came from.
 ///
 /// A connection that fails its handshake or whose handler errors is dropped; the others go on.
 /// Each connection runs in a `conn` span carrying the peer address. A peer simply going away
 /// is logged at debug, anything else at warn.
 pub async fn serve<F, Fut>(listener: TcpListener, config: Config, handler: F) -> io::Result<()>
 where
-    F: Fn(Connection<TcpStream>, Intention) -> Fut + Send + Sync + 'static,
+    F: Fn(Connection<TcpStream>, Intention, SocketAddr) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<()>> + Send + 'static,
 {
     use tracing::Instrument;
@@ -196,7 +197,7 @@ where
                         return;
                     }
                 };
-                match handler(conn, intention).await {
+                match handler(conn, intention, peer).await {
                     Ok(()) => tracing::debug!("connection closed"),
                     Err(e) if is_disconnect(&e) => tracing::debug!(error = %e, "connection closed"),
                     Err(e) => tracing::warn!(error = %e, "connection failed"),

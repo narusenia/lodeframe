@@ -100,6 +100,94 @@ impl Velocity {
     }
 }
 
+/// A BungeeCord proxy that the bot plays: it writes the player into the server address of the
+/// handshake, the way the proxy does, with BungeeGuard's token when it has one. Written here
+/// from the proxy's side, not with the server's code, so that it checks that code.
+///
+/// Give it to [`Bot::connect_bungee`] or [`Bot::login_bungee`]. The fields can be bent to make
+/// a proxy that does it wrong.
+#[derive(Debug, Clone)]
+pub struct Bungee {
+    /// The UUID the proxy says the player has.
+    pub uuid: Uuid,
+    /// The address the proxy says the player connected from.
+    pub address: String,
+    /// The skin and the like the proxy forwards.
+    pub properties: Vec<ProfileProperty>,
+    /// BungeeGuard's token, forwarded as a property of its own.
+    pub token: Option<String>,
+    /// The whole server address to send instead of the one built from the fields, for a proxy
+    /// that writes it wrong.
+    pub raw: Option<String>,
+}
+
+impl Bungee {
+    /// A proxy that forwards a player with `uuid`, from 127.0.0.1, without a skin or a token.
+    pub fn new(uuid: Uuid) -> Self {
+        Self {
+            uuid,
+            address: "127.0.0.1".into(),
+            properties: Vec::new(),
+            token: None,
+            raw: None,
+        }
+    }
+
+    /// The server address of the handshake: `host\0address\0uuid\0properties`.
+    fn server_address(&self) -> String {
+        if let Some(raw) = &self.raw {
+            return raw.clone();
+        }
+        let json = |s: &str| {
+            // names, values and signatures here are base64 or plain words; only these need care
+            s.replace('\\', "\\\\").replace('"', "\\\"")
+        };
+        let mut items: Vec<String> = self
+            .properties
+            .iter()
+            .map(|p| {
+                let signature = p
+                    .signature
+                    .as_ref()
+                    .map_or(String::new(), |s| format!(",\"signature\":\"{}\"", json(s)));
+                format!(
+                    "{{\"name\":\"{}\",\"value\":\"{}\"{signature}}}",
+                    json(&p.name),
+                    json(&p.value)
+                )
+            })
+            .collect();
+        if let Some(token) = &self.token {
+            items.push(format!(
+                "{{\"name\":\"bungeeguard-token\",\"value\":\"{}\",\"signature\":\"\"}}",
+                json(token)
+            ));
+        }
+        format!(
+            "localhost\0{}\0{:032x}\0[{}]",
+            self.address,
+            self.uuid.0,
+            items.join(",")
+        )
+    }
+}
+
+/// The proxy a bot logs in behind.
+#[derive(Debug, Clone)]
+enum Proxy {
+    Velocity(Velocity),
+    Bungee(Bungee),
+}
+
+impl Proxy {
+    fn uuid(&self) -> Uuid {
+        match self {
+            Self::Velocity(v) => v.uuid,
+            Self::Bungee(b) => b.uuid,
+        }
+    }
+}
+
 /// One packet the server sent: its id and the bytes after it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frame {
@@ -248,6 +336,19 @@ impl Bot<TcpStream> {
     }
 }
 
+impl Bot<TcpStream> {
+    /// Like [`connect`](Self::connect), behind the BungeeCord proxy `proxy`.
+    pub async fn connect_bungee(
+        addr: impl ToSocketAddrs,
+        name: &str,
+        proxy: Bungee,
+    ) -> Result<Self> {
+        let stream = TcpStream::connect(addr).await?;
+        stream.set_nodelay(true)?;
+        Self::login_bungee(stream, name, proxy).await
+    }
+}
+
 impl<S: AsyncRead + AsyncWrite + Unpin> Bot<S> {
     /// Logs in as `name` over `stream`: handshake, login, configuration, and the first packets
     /// of the play state. Gives up after 30 seconds.
@@ -258,10 +359,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Bot<S> {
     /// Like [`login`](Self::login), behind the Velocity proxy `proxy`: the server's forwarding
     /// query is answered, and the bot takes the proxy's UUID.
     pub async fn login_behind(stream: S, name: &str, proxy: Velocity) -> Result<Self> {
-        Self::log_in(stream, name, Some(proxy)).await
+        Self::log_in(stream, name, Some(Proxy::Velocity(proxy))).await
     }
 
-    async fn log_in(stream: S, name: &str, proxy: Option<Velocity>) -> Result<Self> {
+    /// Like [`login`](Self::login), behind the BungeeCord proxy `proxy`: the handshake carries
+    /// the proxy's forwarding, and the bot takes the proxy's UUID.
+    pub async fn login_bungee(stream: S, name: &str, proxy: Bungee) -> Result<Self> {
+        Self::log_in(stream, name, Some(Proxy::Bungee(proxy))).await
+    }
+
+    async fn log_in(stream: S, name: &str, proxy: Option<Proxy>) -> Result<Self> {
         let mut bot = Self {
             stream,
             decoder: FrameDecoder::new(),
@@ -269,7 +376,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Bot<S> {
             name: name.into(),
             uuid: proxy
                 .as_ref()
-                .map_or_else(|| Uuid::offline(name), |p| p.uuid),
+                .map_or_else(|| Uuid::offline(name), Proxy::uuid),
             entity_id: 0,
             position: Vec3::ZERO,
             sequence: 0,
@@ -282,10 +389,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Bot<S> {
         Ok(bot)
     }
 
-    async fn join(&mut self, proxy: Option<&Velocity>) -> Result<()> {
+    async fn join(&mut self, proxy: Option<&Proxy>) -> Result<()> {
         self.send(&Intention {
             protocol_version: VarInt(PROTOCOL_VERSION),
-            server_address: "localhost".into(),
+            server_address: match proxy {
+                Some(Proxy::Bungee(bungee)) => bungee.server_address(),
+                _ => "localhost".into(),
+            },
             server_port: 25565,
             next_state: VarInt(2),
         })
@@ -302,7 +412,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Bot<S> {
                     usize::try_from(frame.decode::<LoginCompression>()?.threshold.0).ok();
                 self.threshold = threshold;
                 self.decoder.set_compression(threshold.is_some());
-            } else if let (true, Some(proxy)) = (frame.is::<CustomQuery>(), proxy) {
+            } else if let (true, Some(Proxy::Velocity(proxy))) = (frame.is::<CustomQuery>(), proxy)
+            {
                 let query = frame.decode::<CustomQuery>()?;
                 if query.channel != Identifier::new(VELOCITY_CHANNEL)? {
                     return Err(Error::InvalidValue("query on another channel"));

@@ -181,6 +181,7 @@ dependencies = [
  "lodeframe-macros",
  "lodeframe-protocol",
  "lodeframe-text",
+ "serde_json",
  "sha2",
  "tokio",
  "tracing",
