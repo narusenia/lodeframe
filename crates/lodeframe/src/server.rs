@@ -15,6 +15,7 @@
 //! ```
 
 use std::{
+    future::Future,
     io,
     net::{IpAddr, SocketAddr},
     sync::{
@@ -30,7 +31,7 @@ use crate::{
     clock::SystemClock,
     configuration,
     instance::{self, Instance, InstanceHandle, MAX_BEHIND, Pacing, TICK, TickStats},
-    login,
+    login::{self, Identity, LoginAttempt, LoginDecision, LoginHook},
     net::{Config, ProxyProtocol, serve},
     play::{self, KeepAliveConfig},
     protocol::{State, packets::configuration::Disconnect},
@@ -52,6 +53,19 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long [`Server::forwarding_timeout`] waits for a proxy to answer, unless it says otherwise.
 const FORWARDING_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long [`Server::login_hook_timeout`] gives the login hooks, unless it says otherwise.
+const LOGIN_HOOK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The login hooks of a server, in the order they run.
+#[derive(Clone, Default)]
+struct LoginHooks(Vec<LoginHook>);
+
+impl std::fmt::Debug for LoginHooks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LoginHooks({})", self.0.len())
+    }
+}
 
 /// Whether a proxy sits in front of the server, and how it says who the players are.
 ///
@@ -121,6 +135,8 @@ pub struct Server {
     forwarding: Forwarding,
     forwarding_timeout: Duration,
     proxy_protocol: ProxyProtocol,
+    login_hooks: LoginHooks,
+    login_hook_timeout: Duration,
 }
 
 impl Server {
@@ -143,6 +159,8 @@ impl Server {
             forwarding: Forwarding::None,
             forwarding_timeout: FORWARDING_TIMEOUT,
             proxy_protocol: ProxyProtocol::Off,
+            login_hooks: LoginHooks::default(),
+            login_hook_timeout: LOGIN_HOOK_TIMEOUT,
         }
     }
 
@@ -243,6 +261,36 @@ impl Server {
     /// forwarding names one.
     pub fn proxy_protocol(mut self, proxy_protocol: ProxyProtocol) -> Self {
         self.proxy_protocol = proxy_protocol;
+        self
+    }
+
+    /// Adds a hook that is asked about every player before they join: it can turn them away, or
+    /// let them in as someone else (another name, UUID or skin). Call it again for more hooks.
+    ///
+    /// The hook is an `async` function of a [`LoginAttempt`] that gives back a
+    /// [`LoginDecision`]. It runs on the connection's own task, not the world's thread, so it
+    /// may wait for a database or another service without holding up anyone else. Hooks run one
+    /// after the other in the order they were added; each sees the profile the one before it
+    /// allowed, and the first to deny ends the login with the reason it gave.
+    ///
+    /// A hook runs once the player's identity is settled (after a proxy's forwarding), before
+    /// the player is told it and before they take a place among the players online. A refused
+    /// player never reaches the world. The server list does not ask the hooks.
+    pub fn on_login<F, Fut>(mut self, hook: F) -> Self
+    where
+        F: Fn(LoginAttempt) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = LoginDecision> + Send + 'static,
+    {
+        self.login_hooks
+            .0
+            .push(Arc::new(move |attempt| Box::pin(hook(attempt))));
+        self
+    }
+
+    /// How long all the login hooks together may take for one player, before the player is
+    /// turned away. The default is 10 seconds.
+    pub fn login_hook_timeout(mut self, timeout: Duration) -> Self {
+        self.login_hook_timeout = timeout;
         self
     }
 
@@ -374,42 +422,43 @@ impl Server {
                             return status::respond(&mut conn, &info).await;
                         }
                         let threshold = Some(options.compression_threshold);
-                        let mut profile = match &options.forwarding {
-                            Forwarding::None => login::offline(&mut conn, threshold).await?,
-                            Forwarding::Velocity { secret } => {
-                                login::velocity(
-                                    &mut conn,
-                                    threshold,
-                                    secret,
-                                    options.forwarding_timeout,
-                                )
-                                .await?
-                            }
-                            Forwarding::BungeeCord { trusted } => {
-                                login::bungeecord(
-                                    &mut conn,
-                                    threshold,
-                                    &intention.server_address,
-                                    peer.ip(),
-                                    trusted,
-                                )
-                                .await?
-                            }
-                            Forwarding::BungeeGuard { tokens } => {
-                                login::bungeeguard(
-                                    &mut conn,
-                                    threshold,
-                                    &intention.server_address,
-                                    tokens,
-                                )
-                                .await?
-                            }
+                        let identity = match &options.forwarding {
+                            Forwarding::None => Identity::Offline,
+                            Forwarding::Velocity { secret } => Identity::Velocity {
+                                secret,
+                                limit: options.forwarding_timeout,
+                            },
+                            Forwarding::BungeeCord { trusted } => Identity::BungeeCord {
+                                address: &intention.server_address,
+                                peer: peer.ip(),
+                                trusted,
+                            },
+                            Forwarding::BungeeGuard { tokens } => Identity::BungeeGuard {
+                                address: &intention.server_address,
+                                tokens,
+                            },
                         };
+                        let mut profile = login::identify(&mut conn, threshold, identity).await?;
                         // a forwarding that names the client says it; without one, the balancer
                         // that passed the connection on may have
                         if profile.remote_addr.is_none() {
                             profile.remote_addr = conn.proxied_addr().map(|a| a.ip());
                         }
+                        let profile = match login::decide(
+                            &options.login_hooks.0,
+                            profile,
+                            peer,
+                            options.login_hook_timeout,
+                        )
+                        .await
+                        {
+                            Ok(profile) => profile,
+                            Err(reason) => {
+                                tracing::info!("refused at login");
+                                return login::turn_away(&mut conn, &reason).await;
+                            }
+                        };
+                        let profile = login::finish(&mut conn, profile).await?;
                         let Some(_slot) = slots.take() else {
                             tracing::info!(name = %profile.name, "refused: the server is full");
                             conn.write_packet(&Disconnect {
