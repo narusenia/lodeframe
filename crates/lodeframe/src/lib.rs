@@ -14,6 +14,7 @@ pub mod play;
 pub mod registry;
 pub mod server;
 pub mod status;
+pub mod task;
 #[cfg(feature = "test-util")]
 pub mod test_util;
 pub mod world;

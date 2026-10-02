@@ -16,7 +16,8 @@ use lodeframe::{
     },
     registry::Registries,
     server::{RunningServer, Server},
-    world::World,
+    text::Component,
+    world::{ChatEvent, Ctx, World},
 };
 use lodeframe_bot::{Bot, ChatLine, Frame, spread_position};
 
@@ -267,5 +268,36 @@ async fn logging_in_again_under_the_same_name_cuts_off_the_first_connection_only
         .await
         .unwrap();
 
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_result_of_async_work_comes_back_to_the_world_on_a_real_server() {
+    let server = Server::new("127.0.0.1:0")
+        .start(|registries: &Registries| {
+            let mut world = World::new(registries, FlatGenerator::default());
+            world.view_distance = 2;
+            world.events_mut().on(|e: &mut ChatEvent, ctx: &mut Ctx| {
+                let text = e.name.clone();
+                // the wait is on the runtime of the server; the world keeps ticking
+                ctx.spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    text.to_uppercase()
+                })
+                .then(|shout, ctx| ctx.broadcast(&Component::text(shout)));
+            });
+            world
+        })
+        .await
+        .unwrap();
+    let mut alice = Bot::connect(server.addr(), "Alice").await.unwrap();
+
+    alice.chat("later").await.unwrap();
+
+    let message = alice
+        .recv_until(WAIT, |f| f.system_message().filter(|m| m == "ALICE"))
+        .await
+        .unwrap();
+    assert_eq!(message, "ALICE");
     server.stop();
 }

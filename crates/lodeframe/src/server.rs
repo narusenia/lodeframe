@@ -91,7 +91,12 @@ impl Server {
         let registries = Arc::new(Registries::vanilla());
         let instance = {
             let registries = registries.clone();
-            instance::spawn("world", SystemClock, move || world(&registries))?
+            instance::spawn(
+                "world",
+                SystemClock,
+                tokio::runtime::Handle::current(),
+                move || world(&registries),
+            )?
         };
         let info = StatusInfo::new(self.motd);
         let brand = Arc::new(self.brand);

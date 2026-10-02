@@ -1537,3 +1537,225 @@ fn two_worlds_do_not_hear_each_others_handlers() {
 
     assert_eq!(*seen.borrow(), ["b"]);
 }
+
+async fn sleeping<T>(seconds: u64, value: T) -> T {
+    tokio::time::sleep(std::time::Duration::from_secs(seconds)).await;
+    value
+}
+
+#[test]
+fn a_spawned_result_comes_back_at_the_start_of_the_next_tick() {
+    let mut env = env();
+    let seen = log();
+    let l = seen.clone();
+    env.instance_mut()
+        .events_mut()
+        .on(move |_: &mut ChatEvent, ctx: &mut Ctx| {
+            let l = l.clone();
+            ctx.spawn(async { 21 * 2 })
+                .then(move |n, _| note(&l, format!("got {n}")));
+        });
+    let steve = env.connect("Steve");
+    say(&mut env, &steve, "hello");
+    assert!(seen.borrow().is_empty());
+
+    // the work is done, but the world has not been ticked since
+    env.run_until_idle();
+    assert!(seen.borrow().is_empty());
+    env.tick(1);
+
+    assert_eq!(*seen.borrow(), ["got 42"]);
+}
+
+#[test]
+fn work_that_never_finishes_does_not_hold_up_the_ticks() {
+    let mut env = env();
+    let seen = log();
+    let l = seen.clone();
+    env.instance_mut()
+        .events_mut()
+        .on(move |_: &mut ChatEvent, ctx: &mut Ctx| {
+            let l = l.clone();
+            ctx.spawn(std::future::pending::<()>())
+                .then(move |_, _| note(&l, "never"));
+        });
+    let steve = env.connect("Steve");
+    say(&mut env, &steve, "hello");
+
+    let started = std::time::Instant::now();
+    env.tick(100);
+
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    assert!(seen.borrow().is_empty());
+}
+
+#[test]
+fn a_long_wait_costs_no_real_time_in_the_harness() {
+    let mut env = env();
+    let seen = log();
+    let l = seen.clone();
+    env.instance_mut()
+        .events_mut()
+        .on(move |_: &mut ChatEvent, ctx: &mut Ctx| {
+            let l = l.clone();
+            ctx.spawn(sleeping(3600, "an hour"))
+                .then(move |s, _| note(&l, s));
+        });
+    let steve = env.connect("Steve");
+    say(&mut env, &steve, "hello");
+
+    let started = std::time::Instant::now();
+    env.run_until_idle();
+    env.tick(1);
+
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    assert_eq!(*seen.borrow(), ["an hour"]);
+}
+
+#[test]
+fn results_arrive_in_the_order_the_futures_finished() {
+    let mut env = env();
+    let seen = log();
+    let l = seen.clone();
+    env.instance_mut()
+        .events_mut()
+        .on(move |_: &mut ChatEvent, ctx: &mut Ctx| {
+            for (name, seconds) in [("slow", 5), ("fast", 1), ("middle", 3)] {
+                let l = l.clone();
+                ctx.spawn(sleeping(seconds, name))
+                    .then(move |name, _| note(&l, name));
+            }
+        });
+    let steve = env.connect("Steve");
+    say(&mut env, &steve, "hello");
+
+    env.run_until_idle();
+    env.tick(1);
+
+    assert_eq!(*seen.borrow(), ["fast", "middle", "slow"]);
+}
+
+#[test]
+fn a_result_for_a_player_who_left_can_be_skipped() {
+    let mut env = env();
+    let seen = log();
+    let l = seen.clone();
+    env.instance_mut()
+        .events_mut()
+        .on(move |e: &mut ChatEvent, ctx: &mut Ctx| {
+            let (id, name) = (e.player, e.name.clone());
+            let (a, b) = (l.clone(), l.clone());
+            ctx.spawn(sleeping(1, ()))
+                .then_for(id, move |_, _| note(&a, format!("for {name}")));
+            ctx.spawn(sleeping(1, ())).then(move |_, ctx| {
+                // the id names nobody once the player left: no panic, no name
+                note(&b, format!("then: {:?}", ctx.name(id)));
+            });
+        });
+    let steve = env.connect("Steve");
+    let alex = env.connect("Alex");
+    say(&mut env, &steve, "one");
+    say(&mut env, &alex, "two");
+    env.disconnect(steve);
+
+    env.run_until_idle();
+    env.tick(1);
+
+    let seen = seen.borrow();
+    // Alex stayed; Steve left. `then` ran for both, `then_for` only for Alex
+    assert_eq!(seen.iter().filter(|s| s.as_str() == "for Alex").count(), 1);
+    assert_eq!(seen.iter().filter(|s| s.starts_with("for ")).count(), 1);
+    assert!(seen.contains(&"then: None".to_string()));
+    assert!(seen.contains(&"then: Some(\"Alex\")".to_string()));
+}
+
+#[test]
+fn a_result_does_not_go_to_a_player_who_came_back_under_the_same_name() {
+    let mut env = env();
+    let seen = log();
+    let l = seen.clone();
+    env.instance_mut()
+        .events_mut()
+        .on(move |e: &mut ChatEvent, ctx: &mut Ctx| {
+            let l = l.clone();
+            ctx.spawn(sleeping(1, ()))
+                .then_for(e.player, move |_, _| note(&l, "called"));
+        });
+    let first = env.connect("Steve");
+    say(&mut env, &first, "hello");
+    env.disconnect(first);
+    let _second = env.connect("Steve");
+
+    env.run_until_idle();
+    env.tick(1);
+
+    assert!(seen.borrow().is_empty());
+}
+
+#[test]
+fn a_callback_can_emit_and_spawn_and_the_new_work_waits_for_the_next_tick() {
+    let mut env = env();
+    let seen = log();
+    let events = env.instance_mut().events_mut();
+    let l = seen.clone();
+    events.on(move |_: &mut ChatEvent, ctx: &mut Ctx| {
+        let l = l.clone();
+        ctx.spawn(async { 1 }).then(move |n, ctx| {
+            note(&l, format!("first {n}"));
+            ctx.emit(Ping(n));
+            let l = l.clone();
+            ctx.spawn(async { 2 })
+                .then(move |n, _| note(&l, format!("second {n}")));
+        });
+    });
+    let l = seen.clone();
+    events.on(move |e: &mut Ping, _: &mut Ctx| note(&l, format!("ping {}", e.0)));
+    let steve = env.connect("Steve");
+    say(&mut env, &steve, "hello");
+
+    env.run_until_idle();
+    env.tick(1);
+    // the event came in the same tick; the second result has not
+    assert_eq!(*seen.borrow(), ["first 1", "ping 1"]);
+
+    env.run_until_idle();
+    env.tick(1);
+    assert_eq!(*seen.borrow(), ["first 1", "ping 1", "second 2"]);
+}
+
+#[test]
+fn a_future_that_panics_gives_no_call_and_does_not_hold_the_harness() {
+    let mut env = env();
+    let seen = log();
+    let l = seen.clone();
+    env.instance_mut()
+        .events_mut()
+        .on(move |_: &mut ChatEvent, ctx: &mut Ctx| {
+            let l = l.clone();
+            ctx.spawn(async {
+                if true {
+                    panic!("a failing query (expected in this test)");
+                }
+            })
+            .then(move |_, _| note(&l, "called"));
+        });
+    let steve = env.connect("Steve");
+    say(&mut env, &steve, "hello");
+
+    env.run_until_idle();
+    env.tick(1);
+
+    assert!(seen.borrow().is_empty());
+    assert!(
+        env.instance()
+            .is_online(env.instance().player_id(steve.uuid()).unwrap())
+    );
+}
+
+#[test]
+#[should_panic(expected = "ctx.spawn needs a runtime")]
+fn spawning_in_a_world_that_was_never_attached_says_why() {
+    let flat = FlatGenerator::default();
+    let mut world = World::new(&Registries::vanilla(), move |pos| flat.load(pos));
+    let _ = world.spawn(async {});
+}

@@ -1,6 +1,6 @@
 # `ctx.spawn`（非同期処理の投げ出しと戻し）実装計画（M2-03）
 
-> **Status**: 計画確定（実装前） — 2026-10-02
+> **Status**: 実装済み — 2026-10-02
 
 要件: REQ-API-003 の Instance 側の 2 項目（ログイン前の async イベントは M2-04）。決定: D6・D16・D21・D31（[decisions.md](../decisions.md)）。
 本体（`task.rs` 新規・`world.rs`・`instance.rs`・`server.rs`・`test_util.rs`）にまたがる。M2-05（スケジューラ）が同じ文脈の型で結果を受けるので、先にこの形を決める。

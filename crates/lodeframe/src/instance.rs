@@ -36,6 +36,9 @@ pub type Packets = Vec<Vec<u8>>;
 
 /// Something that can be ticked. Implement this for your world.
 pub trait Instance {
+    /// Gives the instance the runtime that async work is sent to. Called once, on the instance's
+    /// thread, before the first message. Does nothing unless the instance starts async work.
+    fn attach(&mut self, _runtime: tokio::runtime::Handle) {}
     /// Handles one message from a connection. Called for all waiting messages before each tick.
     fn handle(&mut self, message: Message);
     /// Advances the world by one tick.
@@ -305,7 +308,8 @@ impl std::fmt::Display for Stopped {
 
 impl std::error::Error for Stopped {}
 
-/// Starts a thread, builds the instance on it with `factory`, and ticks it on `clock`.
+/// Starts a thread, builds the instance on it with `factory`, hands it `runtime` through
+/// [`Instance::attach`], and ticks it on `clock`.
 ///
 /// The thread ends when [`InstanceHandle::stop`] is called or every handle is dropped.
 ///
@@ -324,9 +328,15 @@ impl std::error::Error for Stopped {}
 ///
 /// let shared = Rc::new(());
 /// // `shared` is created outside the thread and moved into it: not `Send`.
-/// let _ = spawn("x", SystemClock, move || Holds(shared));
+/// let rt = tokio::runtime::Runtime::new().unwrap();
+/// let _ = spawn("x", SystemClock, rt.handle().clone(), move || Holds(shared));
 /// ```
-pub fn spawn<I, F, C>(name: &str, clock: C, factory: F) -> std::io::Result<InstanceHandle>
+pub fn spawn<I, F, C>(
+    name: &str,
+    clock: C,
+    runtime: tokio::runtime::Handle,
+    factory: F,
+) -> std::io::Result<InstanceHandle>
 where
     I: Instance + 'static,
     F: FnOnce() -> I + Send + 'static,
@@ -339,7 +349,9 @@ where
     thread::Builder::new()
         .name(thread_name.clone())
         .spawn(move || {
-            let (mut runner, handle) = Runner::new(factory());
+            let mut instance = factory();
+            instance.attach(runtime);
+            let (mut runner, handle) = Runner::new(instance);
             let stop = handle.stop.clone();
             if tx.send(handle).is_err() {
                 return;
