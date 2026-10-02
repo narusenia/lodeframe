@@ -69,10 +69,10 @@ trait Instance {
 | 項目 | なぜ外したか | 受け皿 |
 |---|---|---|
 | ログイン前の async イベント | conn task 側で await する別の経路 | M2-04 |
-| 投げた処理の中止（`abort`） | 持ち主が消えたら止める仕組みはスケジューラと同じ設計 | M2-05 |
+| 投げた処理の中止（`abort`） | `then_for` が cb を呼ばないので見える挙動は足りる。future 自体の中止は `JoinHandle` の持ち方が別の設計 | 要望が出てから（[scheduler-plan.md](scheduler-plan.md) のやらないこと） |
 | 同時に走る数の上限・観測 | 計測してから | REQ-OPS-001（v0.8） |
 | `spawn_blocking` | future の中から `tokio::task::spawn_blocking` を使える | — |
-| `World` を落としたときに走っている future を止める | 結果の送り先が閉じるので、完了時に捨てるだけで害は無い | M2-05 の「持ち主が消えたら止める」 |
+| `World` を落としたときに走っている future を止める | 結果の送り先が閉じるので、完了時に捨てるだけで害は無い | 同上 |
 
 ## テスト
 
