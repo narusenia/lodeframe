@@ -16,7 +16,7 @@ use lodeframe_protocol::{
     packets::{
         configuration::{
             AckFinishConfiguration, BRAND_CHANNEL, ClientboundCustomPayload, ClientboundKnownPacks,
-            FinishConfiguration, ServerboundKnownPacks,
+            FinishConfiguration, ServerboundCustomPayload, ServerboundKnownPacks,
         },
         handshake::Intention,
         login::{Hello, LoginAcknowledged, LoginCompression, LoginFinished},
@@ -37,6 +37,9 @@ pub use lodeframe_protocol::{Error, Result};
 
 /// How long login and configuration may take before the bot gives up.
 const JOIN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The brand that bots report to the server, see [`Bot::login`].
+pub const BRAND: &str = "lodeframe-bot";
 
 /// One packet the server sent: its id and the bytes after it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,6 +220,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Bot<S> {
                 self.decoder.set_compression(threshold.is_some());
             } else if frame.is::<LoginFinished>() {
                 self.send(&LoginAcknowledged).await?;
+                // as the game does, before the server has asked for anything
+                let mut data = Vec::new();
+                BRAND.to_owned().encode(&mut data)?;
+                self.send(&ServerboundCustomPayload {
+                    channel: Identifier::new(BRAND_CHANNEL)?,
+                    data,
+                })
+                .await?;
                 break;
             } else {
                 return Err(Error::InvalidValue("unexpected packet in login"));
@@ -344,6 +355,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Bot<S> {
         encode_frame(&body, self.threshold, &mut wire)?;
         self.stream.write_all(&wire).await?;
         Ok(self.stream.flush().await?)
+    }
+
+    /// Sends `data` to the server on the plugin channel `channel`.
+    pub async fn plugin_message(&mut self, channel: &str, data: &[u8]) -> Result<()> {
+        self.send(
+            &lodeframe_protocol::packets::play::ServerboundCustomPayload {
+                channel: Identifier::new(channel)?,
+                data: data.to_vec(),
+            },
+        )
+        .await
     }
 
     /// Moves to `position`, on the ground.

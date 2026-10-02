@@ -12,7 +12,7 @@ use tokio::{
 };
 
 use crate::{
-    instance::{InstanceHandle, Message, OUTBOX, Packets},
+    instance::{InstanceHandle, Message, OUTBOX, Packets, PluginMessage},
     login::Profile,
     net::{Connection, is_disconnect},
     protocol::{
@@ -103,10 +103,19 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
     profile: Profile,
     instance: InstanceHandle,
 ) -> Result<()> {
-    run_with(conn, profile, instance, KeepAliveConfig::default()).await
+    run_with(
+        conn,
+        profile,
+        instance,
+        KeepAliveConfig::default(),
+        Vec::new(),
+    )
+    .await
 }
 
-/// Like [`run`], with keep alives at `keep_alive`.
+/// Like [`run`], with keep alives at `keep_alive`, and with the `plugin_messages` that the client
+/// sent in configuration (see [`configuration::run`](crate::configuration::run)) handed to the
+/// instance on the join.
 ///
 /// A client that answers with the wrong id, answers without being asked, or leaves a keep alive
 /// unanswered for [`KeepAliveConfig::timeout`] is told why and disconnected. Each answer sends
@@ -116,6 +125,7 @@ pub async fn run_with<S: AsyncRead + AsyncWrite + Unpin>(
     profile: Profile,
     instance: InstanceHandle,
     keep_alive: KeepAliveConfig,
+    plugin_messages: Vec<PluginMessage>,
 ) -> Result<()> {
     if conn.state() != State::Play {
         return Err(Error::InvalidValue("not in the play state"));
@@ -126,7 +136,11 @@ pub async fn run_with<S: AsyncRead + AsyncWrite + Unpin>(
     // weak: the instance's copy alone keeps the channel open, so that it can end the connection
     let connection = outbound.downgrade();
     instance
-        .send(Message::Join { profile, outbound })
+        .send(Message::Join {
+            profile,
+            outbound,
+            plugin_messages,
+        })
         .await
         .map_err(|_| Error::InvalidValue("instance has stopped"))?;
 

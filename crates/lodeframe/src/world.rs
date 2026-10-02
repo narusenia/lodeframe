@@ -10,6 +10,7 @@ use crate::{
     chunk::{Chunk, ChunkLoader, ChunkPos, ChunkTracker, Chunks, HEIGHT, MIN_Y},
     data::Data,
     event::{ChildId, Event, EventNode, Listener, ListenerId, Parents},
+    instance::PluginMessage,
     instance::{Instance, Message, Packets, Sessions},
     login::Profile,
     protocol::{
@@ -17,15 +18,20 @@ use crate::{
         block::{AIR, STONE},
         entity_type::PLAYER,
         ids, packet_body,
-        packets::play::{
-            ACTION_START_DESTROY_BLOCK, AddEntity, BlockChangedAck, BlockUpdate, Chat,
-            ChunkBatchFinished, ChunkBatchStart, Disconnect, DisguisedChat, EntityPositionSync,
-            FLAG_SNEAKING, ForgetLevelChunk, GameEvent, INPUT_SNEAK, LEVEL_CHUNKS_LOAD_START,
-            Login, MOVE_UNITS_PER_BLOCK, MoveEntityPos, MoveEntityPosRot, MoveEntityRot,
-            MovePlayerPos, MovePlayerPosRot, MovePlayerRot, MovePlayerStatusOnly, ON_GROUND,
-            POSE_CROUCHING, PlayerAction, PlayerInfo, PlayerInfoAdd, PlayerInfoRemove, PlayerInput,
-            PlayerPosition, RemoveEntities, RotateHead, SetChunkCacheCenter, SetEntityFlagsAndPose,
-            SpawnInfo, SystemChat, UseItemOn, angle,
+        packets::{
+            MAX_CLIENTBOUND_PAYLOAD,
+            configuration::BRAND_CHANNEL,
+            play::{
+                ACTION_START_DESTROY_BLOCK, AddEntity, BlockChangedAck, BlockUpdate, Chat,
+                ChunkBatchFinished, ChunkBatchStart, ClientboundCustomPayload, Disconnect,
+                DisguisedChat, EntityPositionSync, FLAG_SNEAKING, ForgetLevelChunk, GameEvent,
+                INPUT_SNEAK, LEVEL_CHUNKS_LOAD_START, Login, MOVE_UNITS_PER_BLOCK, MoveEntityPos,
+                MoveEntityPosRot, MoveEntityRot, MovePlayerPos, MovePlayerPosRot, MovePlayerRot,
+                MovePlayerStatusOnly, ON_GROUND, POSE_CROUCHING, PlayerAction, PlayerInfo,
+                PlayerInfoAdd, PlayerInfoRemove, PlayerInput, PlayerPosition, RemoveEntities,
+                RotateHead, ServerboundCustomPayload, SetChunkCacheCenter, SetEntityFlagsAndPose,
+                SpawnInfo, SystemChat, UseItemOn, angle,
+            },
         },
         split_packet_id,
     },
@@ -110,6 +116,33 @@ pub struct ShutdownEvent {
 }
 
 impl Event for ShutdownEvent {}
+
+/// A player sent a plugin message on a channel. Handlers for one channel filter on
+/// [`channel`](Self::channel), for instance with [`EventNode::only_if`].
+///
+/// What the client sent while it was joining arrives after the [`PlayerJoinEvent`], with the brand
+/// it reports ([`Ctx::client_brand`]) already known to the join handlers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginMessageEvent {
+    /// Who sent it.
+    pub player: PlayerId,
+    /// What it is for.
+    pub channel: Identifier,
+    /// The message itself, whatever the channel defines.
+    pub data: Vec<u8>,
+}
+
+impl PlayerEvent for PluginMessageEvent {
+    fn player(&self) -> PlayerId {
+        self.player
+    }
+}
+
+impl Event for PluginMessageEvent {
+    fn parents<C: 'static>(&mut self, parents: &mut Parents<'_, C>) {
+        parents.visit::<dyn PlayerEvent>(self);
+    }
+}
 
 /// A player said something in the chat. Cancel it to keep it from the others, or replace
 /// [`message`](Self::message) to change what they see.
@@ -306,6 +339,8 @@ struct Player {
     data: Data,
     // the round trip of the last keep alive, none until the first is answered
     latency: Option<Duration>,
+    // what the client reported on `minecraft:brand` while it joined
+    client_brand: Option<String>,
 }
 
 impl Player {
@@ -616,6 +651,37 @@ impl Ctx {
         self.resolve(player).and_then(|p| p.latency)
     }
 
+    /// The brand the player's client reported while joining (`vanilla`, or the name of a mod
+    /// loader), or `None` if they are gone or it did not say.
+    pub fn client_brand(&self, player: PlayerId) -> Option<&str> {
+        self.resolve(player).and_then(|p| p.client_brand.as_deref())
+    }
+
+    /// Sends `data` to one player on `channel`. Does nothing if they are gone. Data of more than
+    /// [`MAX_CLIENTBOUND_PAYLOAD`] bytes is not sent.
+    pub fn send_plugin_message(&mut self, player: PlayerId, channel: &Identifier, data: &[u8]) {
+        if !self.is_online(player) {
+            return;
+        }
+        if data.len() > MAX_CLIENTBOUND_PAYLOAD {
+            tracing::warn!(
+                channel = channel.as_str(),
+                bytes = data.len(),
+                "plugin message too long, not sent"
+            );
+            return;
+        }
+        let Ok(body) = packet_body(&ClientboundCustomPayload {
+            channel: channel.clone(),
+            data: data.to_vec(),
+        }) else {
+            return;
+        };
+        if self.send_body(player.uuid, body).is_err() {
+            self.leave(player.uuid);
+        }
+    }
+
     /// The player's name, or `None` if they are gone.
     pub fn name(&self, player: PlayerId) -> Option<&str> {
         self.resolve(player).map(|p| p.name.as_str())
@@ -691,6 +757,7 @@ impl Ctx {
         &mut self,
         profile: Profile,
         outbound: tokio::sync::mpsc::Sender<Packets>,
+        plugin_messages: &[PluginMessage],
     ) -> Option<PlayerJoinEvent> {
         let id = profile.uuid;
         if self.players.contains_key(&id) {
@@ -722,6 +789,10 @@ impl Ctx {
             moved: false,
             data: Data::default(),
             latency: None,
+            client_brand: plugin_messages
+                .iter()
+                .find(|m| m.channel.as_str() == BRAND_CHANNEL)
+                .and_then(|m| String::decode(&mut m.data.as_slice()).ok()),
         };
         if self.send_join(id, &player, entity_id).is_err() {
             self.sessions.leave(id);
@@ -1370,14 +1441,33 @@ impl World {
         }
     }
 
-    fn join(&mut self, profile: Profile, outbound: tokio::sync::mpsc::Sender<Packets>) {
-        let joined = self.ctx.join(profile, outbound);
+    fn join(
+        &mut self,
+        profile: Profile,
+        outbound: tokio::sync::mpsc::Sender<Packets>,
+        plugin_messages: Vec<PluginMessage>,
+    ) {
+        let joined = self.ctx.join(profile, outbound, &plugin_messages);
         // a player who was replaced by this one has left before this one is here
         self.flush_departures();
         if let Some(mut event) = joined {
             self.emit(&mut event);
             self.ctx.finish_join(event.player.uuid);
+            // what the client sent while joining; a join handler may have removed it already
+            for message in plugin_messages {
+                if self.ctx.is_online(event.player) {
+                    self.plugin_message(event.player, message.channel, message.data);
+                }
+            }
         }
+    }
+
+    fn plugin_message(&mut self, player: PlayerId, channel: Identifier, data: Vec<u8>) {
+        self.emit(&mut PluginMessageEvent {
+            player,
+            channel,
+            data,
+        });
     }
 
     fn packet(&mut self, id: Uuid, body: &[u8]) {
@@ -1397,6 +1487,13 @@ impl World {
                 self.player_action(id, PlayerAction::decode(&mut payload)?)
             }
             ids::play::serverbound::USE_ITEM_ON => self.place(id, UseItemOn::decode(&mut payload)?),
+            ids::play::serverbound::CUSTOM_PAYLOAD => {
+                let message = ServerboundCustomPayload::decode(&mut payload)?;
+                if let Some(player) = self.ctx.player_id(id) {
+                    self.plugin_message(player, message.channel, message.data);
+                }
+                Ok(())
+            }
             _ => self.ctx.on_packet(id, packet_id, payload),
         }
     }
@@ -1478,7 +1575,11 @@ impl Instance for World {
 
     fn handle(&mut self, message: Message) {
         match message {
-            Message::Join { profile, outbound } => self.join(profile, outbound),
+            Message::Join {
+                profile,
+                outbound,
+                plugin_messages,
+            } => self.join(profile, outbound, plugin_messages),
             Message::Packet { player, body } => self.packet(player, &body),
             Message::Latency { player, rtt } => {
                 if let Some(p) = self.ctx.players.get_mut(&player) {

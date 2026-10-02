@@ -1,13 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Offline-mode login: no authentication, the UUID comes from the name.
 
-use tokio::io::{AsyncRead, AsyncWrite};
+use std::{io, time::Duration};
+
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    time::timeout,
+};
 
 use crate::{
     net::Connection,
     protocol::{
-        Error, Result, State, Uuid, VarInt,
-        packets::login::{Hello, LoginAcknowledged, LoginCompression, LoginFinished},
+        Error, Identifier, Result, State, Uuid, VarInt,
+        packets::login::{
+            CustomQuery, CustomQueryAnswer, Hello, LoginAcknowledged, LoginCompression,
+            LoginFinished,
+        },
     },
 };
 
@@ -59,4 +67,48 @@ pub async fn offline<S: AsyncRead + AsyncWrite + Unpin>(
     conn.read_packet::<LoginAcknowledged>().await?;
     conn.set_state(State::Configuration);
     Ok(profile)
+}
+
+/// Asks the client things on channels of the server's own while it logs in, the way a proxy
+/// passes the player on. One per connection, so that every question gets its own id.
+///
+/// [`offline`] does not ask anything; whatever extends the login calls this between the
+/// packets it reads.
+#[derive(Debug, Default)]
+pub struct Queries {
+    next: i32,
+}
+
+impl Queries {
+    /// Sends `data` on `channel` and waits up to `limit` for the answer.
+    ///
+    /// `Ok(None)` is a client that does not know the channel. A client that does not answer in
+    /// time is a [`TimedOut`](io::ErrorKind::TimedOut) error, and so is an answer to another
+    /// question or any other packet: the caller ends the login, with a reason if it likes.
+    pub async fn ask<S: AsyncRead + AsyncWrite + Unpin>(
+        &mut self,
+        conn: &mut Connection<S>,
+        channel: Identifier,
+        data: &[u8],
+        limit: Duration,
+    ) -> Result<Option<Vec<u8>>> {
+        if conn.state() != State::Login {
+            return Err(Error::InvalidValue("not in the login state"));
+        }
+        let transaction_id = VarInt(self.next);
+        self.next = self.next.wrapping_add(1);
+        conn.write_packet(&CustomQuery {
+            transaction_id,
+            channel,
+            data: data.to_vec(),
+        })
+        .await?;
+        let answer: CustomQueryAnswer = timeout(limit, conn.read_packet())
+            .await
+            .map_err(|_| Error::from(io::Error::from(io::ErrorKind::TimedOut)))??;
+        if answer.transaction_id != transaction_id {
+            return Err(Error::InvalidValue("answer to another login query"));
+        }
+        Ok(answer.data)
+    }
 }

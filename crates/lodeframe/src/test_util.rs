@@ -25,7 +25,7 @@
 //!
 //! impl Instance for Lobby {
 //!     fn handle(&mut self, message: Message) {
-//!         if let Message::Join { profile, outbound } = message {
+//!         if let Message::Join { profile, outbound, .. } = message {
 //!             self.sessions.join(profile.uuid, outbound);
 //!             self.events.emit(&mut Greeted(profile.name), &mut self.sessions);
 //!         }
@@ -48,7 +48,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     event::{Event, EventNode},
-    instance::{Instance, Message, Packets},
+    instance::{Instance, Message, Packets, PluginMessage},
     login::Profile,
     protocol::{Decode, Encode, Packet, Result, Uuid, packet_body, split_packet_id},
 };
@@ -140,6 +140,12 @@ impl<I: Instance> TestEnv<I> {
 
     /// Joins a player called `name`. The instance has handled the join when this returns.
     pub fn connect(&mut self, name: &str) -> FakePlayer {
+        self.connect_with(name, Vec::new())
+    }
+
+    /// Like [`connect`](Self::connect), with the plugin messages that the client sent while it
+    /// joined, such as its brand (`minecraft:brand`, a string).
+    pub fn connect_with(&mut self, name: &str, plugin_messages: Vec<PluginMessage>) -> FakePlayer {
         let uuid = Uuid::offline(name);
         let (outbound, inbox) = mpsc::channel(OUTBOX);
         let connection = outbound.downgrade();
@@ -149,6 +155,7 @@ impl<I: Instance> TestEnv<I> {
                 name: name.into(),
             },
             outbound,
+            plugin_messages,
         });
         FakePlayer {
             uuid,
@@ -161,6 +168,18 @@ impl<I: Instance> TestEnv<I> {
     pub fn send<P: Packet + Encode>(&mut self, player: &FakePlayer, packet: &P) {
         let body = packet_body(packet).expect("the packet encodes");
         self.send_raw(player, body);
+    }
+
+    /// Sends `data` on `channel` as `player`, as a client does in play. The instance has handled
+    /// it when this returns.
+    pub fn plugin_message(&mut self, player: &FakePlayer, channel: &str, data: &[u8]) {
+        self.send(
+            player,
+            &crate::protocol::packets::play::ServerboundCustomPayload {
+                channel: crate::protocol::Identifier::new(channel).expect("a valid channel"),
+                data: data.to_vec(),
+            },
+        );
     }
 
     /// Sends a packet body (id followed by payload) as `player`, for bytes a packet type would

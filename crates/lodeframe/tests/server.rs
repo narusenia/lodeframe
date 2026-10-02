@@ -6,17 +6,17 @@ use std::time::Duration;
 use lodeframe::{
     chunk::FlatGenerator,
     protocol::{
-        FrameDecoder, VarInt, encode_frame, packet_body,
+        FrameDecoder, Identifier, VarInt, encode_frame, packet_body,
         packets::{
             handshake::Intention,
-            play::Disconnect,
+            play::{ClientboundCustomPayload, Disconnect},
             status::{StatusRequest, StatusResponse},
         },
         split_packet_id,
     },
     registry::Registries,
     server::{RunningServer, Server},
-    world::World,
+    world::{Ctx, PlayerJoinEvent, PluginMessageEvent, World},
 };
 use lodeframe_bot::Bot;
 use tokio::{
@@ -222,6 +222,56 @@ async fn shutting_down_an_empty_server_returns_at_once() {
     tokio::time::timeout(Duration::from_secs(10), server.shutdown())
         .await
         .expect("an empty server shuts down quickly");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bot_and_the_server_trade_plugin_messages() {
+    let server = Server::new("127.0.0.1:0")
+        .start(|registries: &Registries| {
+            let mut world = World::new(registries, FlatGenerator::default());
+            world.view_distance = 2;
+            world
+                .events_mut()
+                .on(|e: &mut PlayerJoinEvent, ctx: &mut Ctx| {
+                    let brand = ctx.client_brand(e.player).unwrap_or("none").to_owned();
+                    let channel = Identifier::new("test:brand").unwrap();
+                    ctx.send_plugin_message(e.player, &channel, brand.as_bytes());
+                })
+                .on(|e: &mut PluginMessageEvent, ctx: &mut Ctx| {
+                    if e.channel.as_str() == "test:ping" {
+                        let channel = Identifier::new("test:pong").unwrap();
+                        ctx.send_plugin_message(e.player, &channel, &e.data);
+                    }
+                });
+            world
+        })
+        .await
+        .unwrap();
+    let mut bot = Bot::connect(server.addr(), "Steve").await.unwrap();
+
+    // the brand the bot reported in configuration is known when it joins
+    let limit = Duration::from_secs(10);
+    let told = bot
+        .recv_until(limit, |frame| {
+            let message = frame.decode::<ClientboundCustomPayload>().ok()?;
+            (frame.is::<ClientboundCustomPayload>() && message.channel.as_str() == "test:brand")
+                .then_some(message.data)
+        })
+        .await
+        .unwrap();
+    assert_eq!(told, lodeframe_bot::BRAND.as_bytes());
+
+    bot.plugin_message("test:ping", b"hello").await.unwrap();
+    let echoed = bot
+        .recv_until(limit, |frame| {
+            let message = frame.decode::<ClientboundCustomPayload>().ok()?;
+            (frame.is::<ClientboundCustomPayload>() && message.channel.as_str() == "test:pong")
+                .then_some(message.data)
+        })
+        .await
+        .unwrap();
+    assert_eq!(echoed, b"hello");
+    server.stop();
 }
 
 #[tokio::test(flavor = "multi_thread")]

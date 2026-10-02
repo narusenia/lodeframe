@@ -1,6 +1,6 @@
 # plugin message 実装計画（M2-07）
 
-> **Status**: 計画 — 2026-10-03
+> **Status**: 実装済み — 2026-10-03
 
 要件: REQ-NET-005。決定: D6・D16・D21・D37・D38（[decisions.md](../decisions.md)）。
 `lodeframe-protocol`・`lodeframe`（本体）・`lodeframe-bot` にまたがるので、コードの前にここで形を決める。M2-08（Velocity）が login の要求を使う。
@@ -56,6 +56,13 @@ impl Queries {
 
 - `TestEnv::connect_with(name, Vec<PluginMessage>)`（`connect` はこれの空版）。`TestEnv::plugin_message(&player, channel, data)` で serverbound を送れる。受信側は `FakePlayer::drain_as::<play::ClientboundCustomPayload>()`
 - `Bot` は configuration で `minecraft:brand`（`lodeframe-bot`）を送るようになり、`Bot::plugin_message(channel, data)` で play の任意チャンネルを送れる。受け取りは `Frame::decode::<play::ClientboundCustomPayload>()`（既存の `recv_until`）
+
+## 利用者に見える変更（v0.x）
+
+- `Message::Join` に `plugin_messages` が増えた。自作 Instance は `..` で受けるか、欄を扱う
+- `configuration::run` / `run_with` の戻りが `Result<Vec<PluginMessage>>` になった
+- `play::run_with` が `plugin_messages` を受ける（第 5 引数）
+- `ServerboundCustomPayload`（configuration・play）、`ClientboundCustomPayload`（play）が protocol に増えた。configuration の `ClientboundCustomPayload` と名前が同じなので、両方を `*` で取り込むと曖昧になる
 
 ## 確認して決めたこと（2026-10-03）
 
