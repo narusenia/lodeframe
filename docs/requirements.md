@@ -616,7 +616,7 @@ Adventure 相当の層（D19）。Component と MiniMessage は `lodeframe-text`
 - v0.2: Player・Entity・Instance（実行中の値、保存しない）と ItemStack（アイテムの `custom_data` に入り、クライアントとの往復とインベントリの操作で残る）。
 - v0.3: Block（位置ごとの NBT。REQ-WORLD-003 の block entity の読込と同じ仕組み）。
 - **受入条件**
-  - [ ] 型の合わない key での読み出しがコンパイルエラーか `None` になる（実行時に panic しない）
+  - [x] 型の合わない key での読み出しがコンパイルエラーか `None` になる（実行時に panic しない）
   - [ ] GUI のアイテムに付けた値を、クリックのイベントで読める
   - [ ] v0.3: ブロックに付けた値を、そのブロックの破壊・操作のイベントで読める
 

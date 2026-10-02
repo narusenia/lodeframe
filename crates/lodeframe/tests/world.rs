@@ -3,6 +3,7 @@
 
 use lodeframe::{
     chunk::{ChunkLoader, ChunkPos, FlatGenerator},
+    data::Key,
     event::{Event, EventNode, Listener},
     protocol::{
         BlockPos, Direction, Encode, VarInt, Vec3,
@@ -2025,5 +2026,139 @@ fn dropping_the_world_drops_its_tasks() {
 
     drop(env);
 
+    assert!(dropped.get());
+}
+
+const SCORE: Key<u32> = Key::new("test:score");
+const SCORE_TEXT: Key<String> = Key::new("test:score");
+
+#[test]
+fn what_is_attached_to_a_player_is_read_back_in_a_later_handler() {
+    let mut env = env();
+    let seen = log();
+    let l = seen.clone();
+    env.instance_mut()
+        .events_mut()
+        .on(|e: &mut PlayerJoinEvent, ctx: &mut Ctx| {
+            ctx.player_data_mut(e.player).unwrap().set(&SCORE, 10);
+        })
+        .on(move |e: &mut ChatEvent, ctx: &mut Ctx| {
+            let data = ctx.player_data_mut(e.player).unwrap();
+            *data.get_mut(&SCORE).unwrap() += 1;
+            // a key of another type under the same name finds nothing
+            assert_eq!(data.get(&SCORE_TEXT), None);
+            note(&l, format!("{}", data.get(&SCORE).unwrap()));
+        });
+    let steve = env.connect("Steve");
+    let alex = env.connect("Alex");
+
+    say(&mut env, &steve, "a");
+    say(&mut env, &steve, "b");
+    say(&mut env, &alex, "c");
+
+    assert_eq!(*seen.borrow(), ["11", "12", "11"]);
+}
+
+#[test]
+fn a_player_who_left_has_no_data_and_one_who_comes_back_starts_empty() {
+    let mut env = env();
+    let steve = env.connect("Steve");
+    let old = id_of(&env, &steve);
+    env.instance_mut()
+        .player_data_mut(old)
+        .unwrap()
+        .set(&SCORE, 5);
+    env.disconnect(steve);
+
+    assert!(env.instance().player_data(old).is_none());
+    assert!(env.instance_mut().player_data_mut(old).is_none());
+
+    let back = env.connect("Steve");
+    let new = id_of(&env, &back);
+    assert!(
+        env.instance()
+            .player_data(new)
+            .unwrap()
+            .get(&SCORE)
+            .is_none()
+    );
+    // the old id does not reach the new player's data
+    assert!(env.instance().player_data(old).is_none());
+}
+
+#[test]
+fn the_data_of_a_player_who_leaves_can_be_read_while_their_leave_is_handled() {
+    struct Guard(Rc<std::cell::Cell<bool>>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            self.0.set(true);
+        }
+    }
+    use std::rc::Rc;
+    let mut env = env();
+    let seen = log();
+    let l = seen.clone();
+    let dropped = Rc::new(std::cell::Cell::new(false));
+    let guard = Rc::new(std::cell::RefCell::new(Some(Guard(dropped.clone()))));
+    env.instance_mut()
+        .events_mut()
+        .on(move |e: &mut PlayerLeaveEvent, ctx: &mut Ctx| {
+            let data = ctx.leaving_data(e.player).unwrap();
+            note(&l, format!("{} had {:?}", e.name, data.get(&SCORE)));
+            // the player is gone from the rest of the API
+            assert!(ctx.player_data(e.player).is_none());
+        });
+    let steve = env.connect("Steve");
+    let id = id_of(&env, &steve);
+    let data = env.instance_mut().player_data_mut(id).unwrap();
+    data.set(&SCORE, 42);
+    data.set_by_type(guard.borrow_mut().take().unwrap());
+    assert!(!dropped.get());
+
+    env.disconnect(steve);
+
+    assert_eq!(*seen.borrow(), ["Steve had Some(42)"]);
+    // dropped once the handlers were done, not kept by the world
+    assert!(dropped.get());
+    assert!(env.instance_mut().leaving_data(id).is_none());
+}
+
+#[test]
+fn leaving_data_is_only_for_the_player_who_is_leaving() {
+    let mut env = env();
+    let steve = env.connect("Steve");
+    let alex = env.connect("Alex");
+    let (steve_id, alex_id) = (id_of(&env, &steve), id_of(&env, &alex));
+    env.instance_mut()
+        .events_mut()
+        .on(move |_: &mut PlayerLeaveEvent, ctx: &mut Ctx| {
+            assert!(ctx.leaving_data(alex_id).is_none());
+        });
+    // nobody is leaving: nothing to find, whoever is asked about
+    assert!(env.instance_mut().leaving_data(steve_id).is_none());
+
+    env.disconnect(steve);
+}
+
+#[test]
+fn what_is_attached_to_the_world_lasts_across_ticks_and_goes_with_it() {
+    struct Guard(std::rc::Rc<std::cell::Cell<bool>>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            self.0.set(true);
+        }
+    }
+    let dropped = std::rc::Rc::new(std::cell::Cell::new(false));
+    let mut env = env();
+    env.instance_mut().data_mut().set(&SCORE, 3);
+    env.instance_mut()
+        .data_mut()
+        .set_by_type(Guard(dropped.clone()));
+
+    env.tick(5);
+
+    assert_eq!(env.instance().data().get(&SCORE), Some(&3));
+    assert!(!dropped.get());
+    drop(env);
     assert!(dropped.get());
 }

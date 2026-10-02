@@ -114,7 +114,7 @@
 | 3.33 | セクション無効化イベント | ⬜ | REQ-WORLD-006（v0.3） |
 | 3.34 | ブロックの補助（視線方向の走査・破壊時間の計算） | ⬜ | REQ-WORLD-015（v0.6） |
 | 3.35 | 座標 API | ✅ D23 | Area・ChunkRange 相当は使う REQ で足す |
-| 3.36 | Instance 単位の event / scheduler / 利用者データ | 🔶 event・scheduler | REQ-API-006・REQ-API-007（v0.2） |
+| 3.36 | Instance 単位の event / scheduler / 利用者データ | ✅ event・scheduler・`ctx.data()`（D35） | REQ-API-006・REQ-API-007（v0.2） |
 | 3.37 | hashed seed | 🔶 0 固定 | REQ-WORLD-007（v0.3） |
 | 3.x | 複数ディメンション（Respawn を伴う移送） | ⬜ overworld 固定 | REQ-WORLD-007（v0.3）。Minestom は DimensionType で持つ |
 
@@ -165,7 +165,7 @@
 
 | # | Minestom の機能 | lodeframe | 受け皿 |
 |---|---|---|---|
-| 5.1 | 独自の Player と UUID の差し替え | ⬜ | 利用者データは REQ-API-007（v0.2）、ログイン前の UUID・名前の差し替えは REQ-API-003（v0.2）。クラスの継承は不要（Rust では持たせるデータで足りる） |
+| 5.1 | 独自の Player と UUID の差し替え | 🔶 利用者データは `ctx.player_data(id)`（D35） | ログイン前の UUID・名前の差し替えは REQ-API-003（v0.2）。クラスの継承は不要（Rust では持たせるデータで足りる） |
 | 5.2 | 接続の流れのイベント（pre-login・configuration・spawn・loaded・disconnect） | 🔶 join / leave のみ | pre-login は REQ-API-003（v0.2）、configuration は REQ-NET-010（v0.3）、loaded は REQ-API-005（v0.2） |
 | 5.3 | ゲームモードと変更イベント（F3+F4 を含む） | 🔶 creative 固定 | REQ-PLAYER-001（v0.2） |
 | 5.4 | 能力（飛行・速度・視野・即時破壊・無敵）と飛行のイベント | ⬜ | REQ-PLAYER-001（v0.2） |
@@ -286,7 +286,7 @@
 
 | # | Minestom の機能 | lodeframe | 受け皿 |
 |---|---|---|---|
-| 10.2 | Tag API（Entity・Item・Block・Instance に型付きの値を付け、NBT に保存） | ⬜ | REQ-API-007。Player・Entity・Instance・ItemStack は v0.2、Block は v0.3（Anvil の block entity と同じ仕組み） |
+| 10.2 | Tag API（Entity・Item・Block・Instance に型付きの値を付け、NBT に保存） | 🔶 Player・Instance（`Data`・`Key`、保存しない。D35） | Entity は M2-17、ItemStack（NBT）は M2-20、Block は v0.3（Anvil の block entity と同じ仕組み） |
 | 10.3 | Snapshot（不変の状態の写し） | ⬜ | REQ-OPS-002（v0.8） |
 | 10.4 | tick の監視イベント | 🔶 `TickStats` を取れるのみ | REQ-OPS-001（v0.8） |
 | 10.5 | 例外ハンドラ | ⬜ ハンドラの panic で Instance のスレッドが止まる | REQ-OPS-003（v0.3） |
