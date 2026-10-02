@@ -32,7 +32,7 @@ Component は `lodeframe-protocol/src/component.rs` の NBT 化をそのまま�
 
 イベントノードを `World` に配線する。M1-15 のブロック操作も同じ仕組みに乗る。
 
-- `World` が `EventNode<World<L>>` を持つ（`events_mut()` で利用者が付ける）。発火は `events` を一時的に取り出し、`emit(&mut ev, self)` の後に戻す。ハンドラから `&mut World` を渡せる（REQ-API-001）。**発火中のハンドラは `events` を変更できない**（取り出し中は空）。ドキュメントに明記する
+- `World` が `EventNode<Ctx>` を持つ（`events_mut()` で利用者が付ける）。ハンドラは `&mut Ctx` を受ける（REQ-API-001）。木は `Ctx` の外にあるので、**発火中のハンドラは木を変更できない**（型で保証。M2-01 で、取り出して空にする方式から変えた。D31）
 - `ChatEvent { player, message, cancelled }`。`message` は `Component`。受信した本文が平文で入り、ハンドラが差し替えれば色・装飾付きで配られる。`cancel()` で配信を止める
 - 受信した本文は、空・256 文字超・制御文字を含むものを捨てる（vanilla は切断する。v0.1 は無視してログに残す）
 - 既定動作: 同じ World の全員（本人を含む）へ `DisguisedChat`。name は送信者名の Component

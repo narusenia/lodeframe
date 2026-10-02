@@ -9,7 +9,7 @@ use lodeframe::{
     registry::Registries,
     text::{Color, Component},
     world::{
-        BlockBreakEvent, BlockPlaceEvent, ChatEvent, PlayerJoinEvent, PlayerLeaveEvent, World,
+        BlockBreakEvent, BlockPlaceEvent, ChatEvent, Ctx, PlayerJoinEvent, PlayerLeaveEvent, World,
     },
 };
 
@@ -20,30 +20,28 @@ pub const BUILD_RADIUS: i32 = 16;
 /// The highest block that can be placed.
 pub const BUILD_TOP: i32 = -50;
 
-type Lobby = World<FlatGenerator>;
-
 /// The lobby world. Build it with [`lodeframe::server::Server::run`].
-pub fn lobby(registries: &Registries) -> Lobby {
+pub fn lobby(registries: &Registries) -> World {
     let mut world = World::new(registries, FlatGenerator::default());
     let events = world.events_mut();
 
-    events.on(|e: &mut PlayerJoinEvent, world: &mut Lobby| {
+    events.on(|e: &mut PlayerJoinEvent, ctx: &mut Ctx| {
         let welcome = Component::text("Welcome to the lobby!")
             .color(Color::Gold)
             .bold();
-        world.send_message(e.player, &welcome);
-        world.broadcast(&Component::text(format!("+ {}", e.name)).color(Color::Green));
+        ctx.send_message(e.player, &welcome);
+        ctx.broadcast(&Component::text(format!("+ {}", e.name)).color(Color::Green));
     });
-    events.on(|e: &mut PlayerLeaveEvent, world: &mut Lobby| {
-        world.broadcast(&Component::text(format!("- {}", e.name)).color(Color::Red));
+    events.on(|e: &mut PlayerLeaveEvent, ctx: &mut Ctx| {
+        ctx.broadcast(&Component::text(format!("- {}", e.name)).color(Color::Red));
     });
 
-    events.on(|e: &mut BlockBreakEvent, _: &mut Lobby| {
+    events.on(|e: &mut BlockBreakEvent, _: &mut Ctx| {
         if e.pos.y <= FLOOR {
             e.cancel();
         }
     });
-    events.on(|e: &mut BlockPlaceEvent, _: &mut Lobby| {
+    events.on(|e: &mut BlockPlaceEvent, _: &mut Ctx| {
         let inside = e.pos.x.abs() <= BUILD_RADIUS
             && e.pos.z.abs() <= BUILD_RADIUS
             && (FLOOR + 1..=BUILD_TOP).contains(&e.pos.y);
@@ -52,12 +50,12 @@ pub fn lobby(registries: &Registries) -> Lobby {
         }
     });
 
-    events.on(|e: &mut ChatEvent, world: &mut Lobby| {
+    events.on(|e: &mut ChatEvent, ctx: &mut Ctx| {
         let text = e.message.text.clone();
         if text.starts_with('.') {
             e.cancel();
             let hint = Component::text("There are no commands in the lobby.").color(Color::Gray);
-            world.send_message(e.player, &hint);
+            ctx.send_message(e.player, &hint);
         } else {
             e.message = Component::text(text).color(Color::White);
         }

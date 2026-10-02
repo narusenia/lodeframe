@@ -13,7 +13,7 @@ use lodeframe::{
     protocol::block::{BEDROCK, COBBLESTONE},
     registry::Registries,
     server::Server,
-    world::{BlockBreakEvent, BlockPlaceEvent, World},
+    world::{BlockBreakEvent, BlockPlaceEvent, Ctx, World},
 };
 use tracing::Level;
 
@@ -32,14 +32,14 @@ async fn main() -> std::io::Result<()> {
         .run(|registries: &Registries| {
             let mut world = World::new(registries, FlatGenerator::default());
             let events = world.events_mut();
-            events.on(|e: &mut BlockPlaceEvent, _: &mut World<FlatGenerator>| {
+            events.on(|e: &mut BlockPlaceEvent, _: &mut Ctx| {
                 if e.pos.y > -50 {
                     e.cancel();
                 } else {
                     e.block = COBBLESTONE.default_state();
                 }
             });
-            events.on(|e: &mut BlockBreakEvent, _: &mut World<FlatGenerator>| {
+            events.on(|e: &mut BlockBreakEvent, _: &mut Ctx| {
                 if e.block == BEDROCK.default_state() {
                     e.cancel();
                 }

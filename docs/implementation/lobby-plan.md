@@ -34,7 +34,7 @@ fn lobby(registries: &Registries) -> World<FlatGenerator> {
 - `Server::new(addr)`、`.motd(..)`。ほかの設定は持たない
 - `server.start(world).await -> io::Result<RunningServer>`: 待ち受けを始めて返す。テストが `addr()`（空きポートの実際の番号）を取り、`stop()` で止める
 - `server.run(world).await`: `start` して、待ち受けが終わるまで待つ
-- `world` は `FnOnce(&Registries) -> World<L> + Send + 'static`。instance のスレッドの上で呼ばれる（`World` はイベントノードを持ち `Send` ではないため。D6）
+- `world` は `FnOnce(&Registries) -> World + Send + 'static`（評価の時点では `World<L>`。M2-01 で `L` を消した）。instance のスレッドの上で呼ばれる（`World` はイベントノードを持ち `Send` ではないため。D6）
 - 接続ごとの組み立て（status の応答、offline login（しきい値 256）、configuration、play）は中に閉じる。接続の失敗は今までどおり、その接続だけを落とす
 
 ### 入退室イベント
@@ -55,13 +55,13 @@ fn lobby(registries: &Registries) -> World<FlatGenerator> {
 
 | 問題 | 今 | v0.2 の方向 |
 |---|---|---|
-| ハンドラの文脈の型が `&mut World<L>`（`L` は具体的なローダ）で、クロージャごとに型注釈が要る | 注釈を書く | `ctx` を型消去したハンドルにする（`ctx.spawn` の導入と一緒に設計。REQ-API-003） |
+| ハンドラの文脈の型が `&mut World<L>`（`L` は具体的なローダ）で、クロージャごとに型注釈が要る | 注釈を書く | `ctx` を型消去したハンドルにする（`ctx.spawn` の導入と一緒に設計。REQ-API-003）。**M2-01 で解消**: `Ctx`（D31） |
 | 発火中は `events` が空。ハンドラの中で足したハンドラは失われ、その中で起きたイベント（退出など）は届かない | ドキュメントに明記 | 追加を発火の後に反映する。ハンドラ内のイベントは発火後に回す |
 | `Component` は 1 つの色・1 つのスタイルのテキストだけ。「名前は金、本文は白」のように混ぜられない | 1 行 1 スタイルにする | 子要素（REQ-TEXT-001 の v0.2）と `text!` |
 | チャットの送信者名は chat type が書式を決め、`ChatEvent` からは変えられない | 名前の見た目は変えられない | 自前で整形して `broadcast` する経路か、送信者名の差し替えを `ChatEvent` に足す |
 | プレイヤーを指すのは `Uuid` と名前だけ。メッセージ送信は `world.send_message(uuid, ..)` | そのまま | Audience（REQ-TEXT-003） |
 | **書いて分かった**: 特定の 1 人を除いて送れない。入室の「+ 名前」は本人にも届く | 本人にも届くまま | Audience（除外つきの宛先） |
-| **書いて分かった**: ハンドラの文脈の型注釈が `World<FlatGenerator>` の別名なしでは読めない（lobby は `type Lobby = ..` を置いた） | 別名で凌ぐ | 上の「文脈の型」と同じ。型消去したハンドルで消える |
+| **書いて分かった**: ハンドラの文脈の型注釈が `World<FlatGenerator>` の別名なしでは読めない（lobby は `type Lobby = ..` を置いた） | 別名で凌ぐ | 上の「文脈の型」と同じ。**M2-01 で解消**: lobby の `type Lobby` は消えた |
 | **解消した**: 起動の組み立て（`main` は 5 行、4 か所の重複は消えた） | `Server` | — |
 
 ### v0.1 でやらなかったこと（後で対応する）
