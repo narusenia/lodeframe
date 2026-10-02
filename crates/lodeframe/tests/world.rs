@@ -20,7 +20,7 @@ use lodeframe::{
     test_util::{FakePlayer, Received, Recorder, TestEnv},
     text::{Color, Component},
     world::{
-        BlockBreakEvent, BlockPlaceEvent, ChatEvent, PlayerJoinEvent, PlayerLeaveEvent, World,
+        BlockBreakEvent, BlockPlaceEvent, ChatEvent, Ctx, PlayerJoinEvent, PlayerLeaveEvent, World,
     },
 };
 
@@ -35,7 +35,7 @@ fn walk(x: f64) -> MovePlayerPos {
     }
 }
 
-fn env() -> TestEnv<World<FlatGenerator>> {
+fn env() -> TestEnv<World> {
     let mut world = World::new(&Registries::vanilla(), FlatGenerator::default());
     world.view_distance = 2;
     // all the chunks at once, so that a test sees them right after the join
@@ -204,7 +204,7 @@ fn a_move_reaches_the_others_at_the_next_tick_as_an_offset() {
 #[test]
 fn moving_and_turning_have_their_own_packets_and_the_head_follows_only_the_yaw() {
     let (mut env, mut steve, alex) = two_players();
-    let mut told = |env: &mut TestEnv<World<FlatGenerator>>| {
+    let mut told = |env: &mut TestEnv<World>| {
         env.tick(1);
         steve.drain()
     };
@@ -376,7 +376,7 @@ fn the_moves_of_a_tick_arrive_as_one_message_for_each_viewer() {
     }
 }
 
-fn say(env: &mut TestEnv<World<FlatGenerator>>, who: &FakePlayer, text: &str) {
+fn say(env: &mut TestEnv<World>, who: &FakePlayer, text: &str) {
     env.send(
         who,
         &Chat {
@@ -411,7 +411,7 @@ fn chat_lines(player: &mut FakePlayer) -> Vec<Received> {
         .collect()
 }
 
-fn two_players() -> (TestEnv<World<FlatGenerator>>, FakePlayer, FakePlayer) {
+fn two_players() -> (TestEnv<World>, FakePlayer, FakePlayer) {
     let mut env = env();
     let mut steve = env.connect("Steve");
     let mut alex = env.connect("Alex");
@@ -437,7 +437,7 @@ fn a_chat_line_reaches_everyone_including_the_sender() {
     }
     let events = seen.take();
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].player, steve.uuid());
+    assert_eq!(events[0].player.uuid(), steve.uuid());
     assert_eq!(events[0].name, "Steve");
     assert_eq!(events[0].message, Component::text("hello"));
 }
@@ -478,9 +478,9 @@ fn a_handler_can_act_on_the_world() {
     let (mut env, mut steve, mut alex) = two_players();
     env.instance_mut()
         .events_mut()
-        .on(|e: &mut ChatEvent, world: &mut World<FlatGenerator>| {
+        .on(|e: &mut ChatEvent, ctx: &mut Ctx| {
             e.cancel();
-            world.send_message(e.player, &Component::text("chat is closed"));
+            ctx.send_message(e.player, &Component::text("chat is closed"));
         });
 
     say(&mut env, &steve, "hello");
@@ -521,7 +521,8 @@ fn server_messages_go_to_one_player_or_everyone() {
     let (mut env, mut steve, mut alex) = two_players();
     let note = Component::text("welcome").color(Color::Gold);
 
-    env.instance_mut().send_message(steve.uuid(), &note);
+    let steve_id = env.instance().player_id(steve.uuid()).unwrap();
+    env.instance_mut().send_message(steve_id, &note);
     assert_eq!(count(&steve.drain(), out::SYSTEM_CHAT), 1);
     assert!(alex.drain().is_empty());
 
@@ -606,7 +607,10 @@ fn breaking_a_block_shows_air_to_everyone() {
     assert_eq!(env.instance_mut().block(GROUND), Some(AIR.default_state()));
     let events = seen.take();
     assert_eq!(events.len(), 1);
-    assert_eq!((events[0].player, events[0].pos), (steve.uuid(), GROUND));
+    assert_eq!(
+        (events[0].player.uuid(), events[0].pos),
+        (steve.uuid(), GROUND)
+    );
     assert_eq!(events[0].block, grass);
 }
 
@@ -802,11 +806,11 @@ fn position(received: &[Received], id: i32) -> usize {
 #[test]
 fn a_message_from_the_join_handler_reaches_the_newcomer_before_their_chunks() {
     let mut env = env();
-    env.instance_mut().events_mut().on(
-        |e: &mut PlayerJoinEvent, world: &mut World<FlatGenerator>| {
-            world.send_message(e.player, &Component::text("welcome"));
-        },
-    );
+    env.instance_mut()
+        .events_mut()
+        .on(|e: &mut PlayerJoinEvent, ctx: &mut Ctx| {
+            ctx.send_message(e.player, &Component::text("welcome"));
+        });
 
     let got = env.connect("Steve").drain();
 
@@ -819,11 +823,11 @@ fn a_message_from_the_join_handler_reaches_the_newcomer_before_their_chunks() {
 fn the_others_have_heard_of_a_join_by_the_time_the_handler_runs() {
     let mut env = env();
     let seen = Recorder::<PlayerJoinEvent>::attach(env.instance_mut().events_mut());
-    env.instance_mut().events_mut().on(
-        |e: &mut PlayerJoinEvent, world: &mut World<FlatGenerator>| {
-            world.broadcast(&Component::text(format!("+ {}", e.name)));
-        },
-    );
+    env.instance_mut()
+        .events_mut()
+        .on(|e: &mut PlayerJoinEvent, ctx: &mut Ctx| {
+            ctx.broadcast(&Component::text(format!("+ {}", e.name)));
+        });
     let mut steve = env.connect("Steve");
     steve.drain();
 
@@ -838,18 +842,18 @@ fn the_others_have_heard_of_a_join_by_the_time_the_handler_runs() {
         events.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
         ["Steve", "Alex"]
     );
-    assert_eq!(events[1].player, alex.uuid());
+    assert_eq!(events[1].player.uuid(), alex.uuid());
 }
 
 #[test]
 fn a_leave_is_announced_after_the_others_were_told() {
     let (mut env, steve, mut alex) = two_players();
     let seen = Recorder::<PlayerLeaveEvent>::attach(env.instance_mut().events_mut());
-    env.instance_mut().events_mut().on(
-        |e: &mut PlayerLeaveEvent, world: &mut World<FlatGenerator>| {
-            world.broadcast(&Component::text(format!("- {}", e.name)));
-        },
-    );
+    env.instance_mut()
+        .events_mut()
+        .on(|e: &mut PlayerLeaveEvent, ctx: &mut Ctx| {
+            ctx.broadcast(&Component::text(format!("- {}", e.name)));
+        });
     let steve_uuid = steve.uuid();
 
     env.disconnect(steve);
@@ -861,12 +865,12 @@ fn a_leave_is_announced_after_the_others_were_told() {
     let events = seen.take();
     assert_eq!(events.len(), 1);
     assert_eq!(
-        (events[0].player, events[0].name.as_str()),
+        (events[0].player.uuid(), events[0].name.as_str()),
         (steve_uuid, "Steve")
     );
 }
 
-fn throttled(per_tick: usize) -> TestEnv<World<FlatGenerator>> {
+fn throttled(per_tick: usize) -> TestEnv<World> {
     let mut world = World::new(&Registries::vanilla(), FlatGenerator::default());
     world.view_distance = 2;
     world.chunks_per_tick = per_tick;
@@ -1010,7 +1014,7 @@ fn a_chunk_is_encoded_once_and_again_after_a_block_changes() {
     assert_eq!(at_origin(&fresh.connect("Zed").drain()), changed);
 }
 
-fn env_with_block() -> TestEnv<World<FlatGenerator>> {
+fn env_with_block() -> TestEnv<World> {
     let mut env = env();
     assert!(
         env.instance_mut()
@@ -1022,7 +1026,7 @@ fn env_with_block() -> TestEnv<World<FlatGenerator>> {
 /// Far enough from the spawn, with a view distance of 2, to be out of sight: chunk 5.
 const FAR: f64 = 5.0 * 16.0 + 0.5;
 
-fn sneak(env: &mut TestEnv<World<FlatGenerator>>, who: &FakePlayer, on: bool) {
+fn sneak(env: &mut TestEnv<World>, who: &FakePlayer, on: bool) {
     env.send(
         who,
         &PlayerInput {
@@ -1284,4 +1288,97 @@ fn a_second_login_of_the_same_name_cuts_off_the_first_and_leaves_the_second_alon
     env.send(&second, &walk(2.5));
     env.tick(1);
     assert_eq!(alex.drain_as::<MoveEntityPos>().len(), 1);
+}
+
+#[test]
+fn a_player_id_stops_naming_a_player_who_left() {
+    let mut env = env();
+    let joins = Recorder::<PlayerJoinEvent>::attach(env.instance_mut().events_mut());
+    let steve = env.connect("Steve");
+    let mut alex = env.connect("Alex");
+    let id = joins.take()[0].player;
+    assert_eq!(id.uuid(), steve.uuid());
+    assert!(env.instance().is_online(id));
+    assert_eq!(env.instance().name(id), Some("Steve"));
+    assert_eq!(env.instance().player_id(steve.uuid()), Some(id));
+    alex.drain();
+
+    env.disconnect(steve);
+
+    // nothing to find, and nothing breaks: the calls do nothing
+    assert!(!env.instance().is_online(id));
+    assert_eq!(env.instance().name(id), None);
+    assert_eq!(env.instance().player_id(id.uuid()), None);
+    env.instance_mut()
+        .send_message(id, &Component::text("anyone there?"));
+    assert_eq!(count(&alex.drain(), out::SYSTEM_CHAT), 0);
+}
+
+#[test]
+fn an_old_player_id_does_not_name_the_player_who_came_after() {
+    let mut env = env();
+    let joins = Recorder::<PlayerJoinEvent>::attach(env.instance_mut().events_mut());
+
+    // the player leaves and comes back
+    let first = env.connect("Steve");
+    let first_id = joins.take()[0].player;
+    env.disconnect(first);
+    let mut second = env.connect("Steve");
+    let second_id = joins.take()[0].player;
+    second.drain();
+
+    assert_eq!(first_id.uuid(), second_id.uuid());
+    assert_ne!(first_id, second_id);
+    assert!(!env.instance().is_online(first_id));
+    assert!(env.instance().is_online(second_id));
+    env.instance_mut()
+        .send_message(first_id, &Component::text("for the first"));
+    assert_eq!(count(&second.drain(), out::SYSTEM_CHAT), 0);
+    env.instance_mut()
+        .send_message(second_id, &Component::text("for the second"));
+    assert_eq!(count(&second.drain(), out::SYSTEM_CHAT), 1);
+
+    // the same when the second login cuts off the first
+    let third = env.connect("Steve");
+    let third_id = joins.take()[0].player;
+    assert!(!env.instance().is_online(second_id));
+    assert!(env.instance().is_online(third_id));
+    drop(third);
+}
+
+#[test]
+fn a_player_dropped_while_a_handler_runs_leaves_after_it() {
+    let mut env = env();
+    let leaves = Recorder::<PlayerLeaveEvent>::attach(env.instance_mut().events_mut());
+    env.instance_mut()
+        .events_mut()
+        .on(|_: &mut ChatEvent, ctx: &mut Ctx| ctx.broadcast(&Component::text("heard")));
+    let steve = env.connect("Steve");
+    let alex = env.connect("Alex");
+    // a client that no longer reads: the message to it fails and it is dropped
+    drop(alex);
+
+    say(&mut env, &steve, "hello");
+
+    let left = leaves.take();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].name, "Alex");
+    assert!(!env.instance().is_online(left[0].player));
+}
+
+#[test]
+fn handlers_do_not_name_the_loader_of_the_world() {
+    // a closure is a loader, and the world and its handlers are the same types as with the
+    // flat generator
+    let flat = FlatGenerator::default();
+    let mut world = World::new(&Registries::vanilla(), move |pos| flat.load(pos));
+    world.view_distance = 2;
+    world
+        .events_mut()
+        .on(|_: &mut PlayerJoinEvent, _: &mut Ctx| {});
+    let mut env = TestEnv::new(world);
+
+    let mut steve = env.connect("Steve");
+
+    assert_eq!(count(&steve.drain(), out::LOGIN), 1);
 }

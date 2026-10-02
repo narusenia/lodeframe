@@ -13,7 +13,7 @@ use lodeframe::{
     registry::Registries,
     server::Server,
     text::{Color, Component},
-    world::{ChatEvent, World},
+    world::{ChatEvent, Ctx, World},
 };
 use tracing::Level;
 
@@ -31,19 +31,17 @@ async fn main() -> std::io::Result<()> {
     Server::new(addr)
         .run(|registries: &Registries| {
             let mut world = World::new(registries, FlatGenerator::default());
-            world
-                .events_mut()
-                .on(|e: &mut ChatEvent, world: &mut World<FlatGenerator>| {
-                    let typed = e.message.text.clone();
-                    if typed.starts_with(['.', '/']) {
-                        e.cancel();
-                        let reply =
-                            Component::text("commands are not supported yet").color(Color::Gray);
-                        world.send_message(e.player, &reply);
-                    } else if typed.ends_with('!') {
-                        e.message = Component::text(typed).color(Color::Red).bold();
-                    }
-                });
+            world.events_mut().on(|e: &mut ChatEvent, ctx: &mut Ctx| {
+                let typed = e.message.text.clone();
+                if typed.starts_with(['.', '/']) {
+                    e.cancel();
+                    let reply =
+                        Component::text("commands are not supported yet").color(Color::Gray);
+                    ctx.send_message(e.player, &reply);
+                } else if typed.ends_with('!') {
+                    e.message = Component::text(typed).color(Color::Red).bold();
+                }
+            });
             world
         })
         .await

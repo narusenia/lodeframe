@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::{
-    chunk::{ChunkLoader, ChunkPos, ChunkTracker, Chunks, HEIGHT, MIN_Y},
+    chunk::{Chunk, ChunkLoader, ChunkPos, ChunkTracker, Chunks, HEIGHT, MIN_Y},
     event::{Event, EventNode},
     instance::{Instance, Message, Packets, Sessions},
     login::Profile,
@@ -42,7 +42,7 @@ const MAX_CHAT: usize = 256;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerJoinEvent {
     /// Who came.
-    pub player: Uuid,
+    pub player: PlayerId,
     /// Their name.
     pub name: String,
 }
@@ -50,15 +50,15 @@ pub struct PlayerJoinEvent {
 impl Event for PlayerJoinEvent {}
 
 /// A player left the world, or was dropped because their connection could not keep up. The
-/// others have been told.
+/// others have been told, and [`player`](Self::player) is already gone: [`Ctx::name`] and the
+/// like find nothing for it.
 ///
-/// Events raised from inside a handler are not delivered (see
-/// [`events_mut`](World::events_mut)), so a player dropped while one is being handled leaves
-/// without this.
+/// A player dropped while a handler runs (a message to them could not be sent) leaves after
+/// that handler is done.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerLeaveEvent {
     /// Who left.
-    pub player: Uuid,
+    pub player: PlayerId,
     /// Their name.
     pub name: String,
 }
@@ -70,7 +70,7 @@ impl Event for PlayerLeaveEvent {}
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatEvent {
     /// Who said it.
-    pub player: Uuid,
+    pub player: PlayerId,
     /// Their name, shown in front of the message.
     pub name: String,
     /// What is sent to everyone. It starts as the plain text that was typed; a handler can set
@@ -96,7 +96,7 @@ impl Event for ChatEvent {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlockBreakEvent {
     /// Who breaks it.
-    pub player: Uuid,
+    pub player: PlayerId,
     /// The block's position.
     pub pos: BlockPos,
     /// The state it has now.
@@ -122,7 +122,7 @@ impl Event for BlockBreakEvent {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlockPlaceEvent {
     /// Who places it.
-    pub player: Uuid,
+    pub player: PlayerId,
     /// Where it goes: next to the block that was clicked, on the face that was clicked.
     pub pos: BlockPos,
     /// The face of the clicked block.
@@ -142,6 +142,36 @@ impl BlockPlaceEvent {
 impl Event for BlockPlaceEvent {
     fn is_cancelled(&self) -> bool {
         self.cancelled
+    }
+}
+
+/// Names one player's stay in a [`World`]. Handlers, tasks and anything else that outlives a
+/// call can keep it.
+///
+/// A player who leaves and comes back, with the same name or not, is a new stay with a new id:
+/// the old id finds nothing in [`Ctx`] (`name` is `None`, `is_online` is `false`, nothing is
+/// sent) and never reaches the player who came after.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PlayerId {
+    uuid: Uuid,
+    // counts the joins of the world, so that two stays of one UUID have different ids
+    serial: u64,
+}
+
+impl PlayerId {
+    /// The player's UUID. Two stays of the same player have the same UUID.
+    pub fn uuid(&self) -> Uuid {
+        self.uuid
+    }
+}
+
+/// Gives a boxed loader a type of its own: `Box<dyn ChunkLoader>` is not one, since `Box<F>`
+/// would clash with the impl for closures.
+struct DynLoader(Box<dyn ChunkLoader>);
+
+impl ChunkLoader for DynLoader {
+    fn load(&self, pos: ChunkPos) -> Option<Chunk> {
+        self.0.load(pos)
     }
 }
 
@@ -175,6 +205,7 @@ fn is_chat_line(text: &str) -> bool {
 
 /// One player in a [`World`].
 struct Player {
+    serial: u64,
     entity_id: i32,
     name: String,
     pos: Vec3,
@@ -312,8 +343,11 @@ impl Player {
     }
 }
 
-/// An [`Instance`] where players stand on chunks from a [`ChunkLoader`] and walk around.
-pub struct World<L> {
+/// The state of a [`World`]: its chunks and its players. This is what handlers get to act on.
+///
+/// Players are named by [`PlayerId`]. A handler can keep one and use it later; if the player is
+/// gone by then, the calls that take it find nobody and do nothing.
+pub struct Ctx {
     /// Where new players appear.
     pub spawn: Vec3,
     /// Chunk radius sent to each player.
@@ -328,7 +362,7 @@ pub struct World<L> {
     /// At most [`view_distance`](Self::view_distance) counts, since there is no ground beyond it.
     /// Set it before players join.
     pub entity_view_distance: u32,
-    chunks: Chunks<L>,
+    chunks: Chunks<DynLoader>,
     // the packets of the chunks that were sent, by position; dropped when a block changes
     chunk_packets: HashMap<ChunkPos, Vec<u8>>,
     sessions: Sessions,
@@ -338,15 +372,16 @@ pub struct World<L> {
     // the holder id of the chat type: the registry id plus one
     chat_type: i32,
     next_entity_id: i32,
+    // the serial of the last player who joined
+    last_serial: u64,
     // players who moved since the last tick, in the order they first did
     movers: Vec<Uuid>,
-    events: EventNode<World<L>>,
+    // players who left since `World` last told the handlers
+    departed: Vec<PlayerLeaveEvent>,
 }
 
-impl<L: ChunkLoader + 'static> World<L> {
-    /// A world of the overworld type over `loader`. `registries` must be the ones sent to
-    /// the players.
-    pub fn new(registries: &Registries, loader: L) -> Self {
+impl Ctx {
+    fn new(registries: &Registries, loader: Box<dyn ChunkLoader>) -> Self {
         let dimension_type = registries
             .network_id(DIMENSION_TYPES, DIMENSION)
             .expect("the overworld dimension type is in the registry");
@@ -355,7 +390,7 @@ impl<L: ChunkLoader + 'static> World<L> {
             view_distance: 8,
             chunks_per_tick: 8,
             entity_view_distance: 5,
-            chunks: Chunks::new(loader),
+            chunks: Chunks::new(DynLoader(loader)),
             chunk_packets: HashMap::new(),
             sessions: Sessions::default(),
             players: HashMap::new(),
@@ -366,19 +401,34 @@ impl<L: ChunkLoader + 'static> World<L> {
                 .expect("the chat type is in the registry") as i32
                 + 1,
             next_entity_id: 0,
+            last_serial: 0,
             movers: Vec::new(),
-            events: EventNode::new(),
+            departed: Vec::new(),
         }
     }
 
-    /// The handlers of this world. Events are emitted on it with the world as the context.
-    ///
-    /// While an event is being handled this node is empty. Handlers added to it from inside a
-    /// handler are lost, and so are the events raised inside a handler, such as a player
-    /// leaving because a message could not be sent to them. Attach handlers before the world
-    /// runs.
-    pub fn events_mut(&mut self) -> &mut EventNode<Self> {
-        &mut self.events
+    /// The id of the player with this UUID who is here now, or `None` if nobody is.
+    pub fn player_id(&self, uuid: Uuid) -> Option<PlayerId> {
+        self.players.get(&uuid).map(|p| PlayerId {
+            uuid,
+            serial: p.serial,
+        })
+    }
+
+    /// Whether the player is still here. `false` for a player who left, even if another player
+    /// with the same UUID is here now.
+    pub fn is_online(&self, player: PlayerId) -> bool {
+        self.resolve(player).is_some()
+    }
+
+    /// The player's name, or `None` if they are gone.
+    pub fn name(&self, player: PlayerId) -> Option<&str> {
+        self.resolve(player).map(|p| p.name.as_str())
+    }
+
+    /// The player this id names, if they are still here.
+    fn resolve(&self, id: PlayerId) -> Option<&Player> {
+        self.players.get(&id.uuid).filter(|p| p.serial == id.serial)
     }
 
     /// The block at `pos`, loading its chunk if needed. `None` outside the world's height and
@@ -411,11 +461,12 @@ impl<L: ChunkLoader + 'static> World<L> {
         true
     }
 
-    /// Shows `message` to one player in the chat. Does nothing if they are not here.
-    pub fn send_message(&mut self, player: Uuid, message: &Component) {
-        if !self.players.contains_key(&player) {
+    /// Shows `message` to one player in the chat. Does nothing if they are gone.
+    pub fn send_message(&mut self, player: PlayerId, message: &Component) {
+        if !self.is_online(player) {
             return;
         }
+        let player = player.uuid;
         let Ok(body) = packet_body(&SystemChat {
             content: message.clone(),
             overlay: false,
@@ -438,7 +489,14 @@ impl<L: ChunkLoader + 'static> World<L> {
         self.send_many(None, body);
     }
 
-    fn join(&mut self, profile: Profile, outbound: tokio::sync::mpsc::Sender<Packets>) {
+    /// Brings a player in as far as the others knowing of them. Returns the event for it, or
+    /// `None` if the player could not be brought in. [`finish_join`](Self::finish_join) sends
+    /// the chunks once the handlers have run.
+    fn join(
+        &mut self,
+        profile: Profile,
+        outbound: tokio::sync::mpsc::Sender<Packets>,
+    ) -> Option<PlayerJoinEvent> {
         let id = profile.uuid;
         if self.players.contains_key(&id) {
             // the same player logged in again: the old connection goes, as in the game
@@ -447,8 +505,11 @@ impl<L: ChunkLoader + 'static> World<L> {
         self.sessions.join(id, outbound);
         self.next_entity_id += 1;
         let entity_id = self.next_entity_id;
+        self.last_serial += 1;
+        let serial = self.last_serial;
         let chunk = chunk_of(self.spawn);
         let mut player = Player {
+            serial,
             entity_id,
             name: profile.name.clone(),
             pos: self.spawn,
@@ -467,7 +528,7 @@ impl<L: ChunkLoader + 'static> World<L> {
         };
         if self.send_join(id, &player, entity_id).is_err() {
             self.sessions.leave(id);
-            return;
+            return None;
         }
         player.pending = player
             .chunks
@@ -497,7 +558,7 @@ impl<L: ChunkLoader + 'static> World<L> {
             // nobody else has heard of the player, so there is nothing to take back
             self.players.remove(&id);
             self.sessions.leave(id);
-            return;
+            return None;
         }
         // then the others: the list first, since a player needs an entry in it to be spawned
         if let Ok(body) = arrival {
@@ -509,11 +570,14 @@ impl<L: ChunkLoader + 'static> World<L> {
                 self.leave(other);
             }
         }
-        self.emit(&mut PlayerJoinEvent {
-            player: id,
+        Some(PlayerJoinEvent {
+            player: PlayerId { uuid: id, serial },
             name: profile.name,
-        });
-        // the chunks come last, the nearest first; `tick` sends the rest
+        })
+    }
+
+    /// Sends the chunks of a player who just joined, the nearest first; `tick` sends the rest.
+    fn finish_join(&mut self, id: Uuid) {
         if self.flush_chunks(id).is_err() {
             self.leave(id);
         }
@@ -635,14 +699,8 @@ impl<L: ChunkLoader + 'static> World<L> {
         }
     }
 
-    fn packet(&mut self, id: Uuid, body: &[u8]) {
-        if self.players.contains_key(&id) && self.on_packet(id, body).is_err() {
-            self.leave(id);
-        }
-    }
-
-    fn on_packet(&mut self, id: Uuid, body: &[u8]) -> Result<()> {
-        let (packet_id, mut payload) = split_packet_id(body)?;
+    /// Handles a packet that raises no event: movement and sneaking.
+    fn on_packet(&mut self, id: Uuid, packet_id: i32, mut payload: &[u8]) -> Result<()> {
         // what the packet says about where the player is and which way they face
         let (position, rotation, flags) = match packet_id {
             ids::play::serverbound::MOVE_PLAYER_POS => {
@@ -665,16 +723,6 @@ impl<L: ChunkLoader + 'static> World<L> {
             ids::play::serverbound::PLAYER_INPUT => {
                 let sneaking = PlayerInput::decode(&mut payload)?.flags & INPUT_SNEAK != 0;
                 return self.set_sneaking(id, sneaking);
-            }
-            ids::play::serverbound::CHAT => {
-                let line = Chat::decode(&mut payload)?;
-                return self.chat(id, line.message);
-            }
-            ids::play::serverbound::PLAYER_ACTION => {
-                return self.player_action(id, PlayerAction::decode(&mut payload)?);
-            }
-            ids::play::serverbound::USE_ITEM_ON => {
-                return self.place(id, UseItemOn::decode(&mut payload)?);
             }
             // commands, teleport and batch answers, ...: nothing to do yet
             _ => return Ok(()),
@@ -727,83 +775,35 @@ impl<L: ChunkLoader + 'static> World<L> {
         self.flush_chunks(id)
     }
 
-    fn chat(&mut self, id: Uuid, text: String) -> Result<()> {
-        let Some(player) = self.players.get(&id) else {
-            return Ok(());
-        };
+    /// The event for a line `id` typed in the chat, or `None` if they are gone or the game would
+    /// not have let them type it.
+    fn chat_event(&self, id: Uuid, text: String) -> Option<ChatEvent> {
+        let player = self.players.get(&id)?;
         if !is_chat_line(&text) {
             tracing::debug!(name = %player.name, "ignoring a chat line the game would not send");
-            return Ok(());
+            return None;
         }
-        let name = player.name.clone();
-        let mut event = ChatEvent {
-            player: id,
-            name: name.clone(),
+        Some(ChatEvent {
+            player: PlayerId {
+                uuid: id,
+                serial: player.serial,
+            },
+            name: player.name.clone(),
             message: Component::text(text),
             cancelled: false,
-        };
-        if self.emit(&mut event) {
-            return Ok(());
-        }
+        })
+    }
+
+    /// Sends a chat line that no handler cancelled to everyone.
+    fn say(&mut self, event: ChatEvent) -> Result<()> {
         let line = DisguisedChat {
             message: event.message,
             chat_type: VarInt(self.chat_type),
-            name: Component::text(name),
+            name: Component::text(event.name),
             target_name: None,
         };
         self.send_many(None, packet_body(&line)?);
         Ok(())
-    }
-
-    /// Runs the handlers of `event`. Returns whether it ended up cancelled.
-    fn emit<E: Event>(&mut self, event: &mut E) -> bool {
-        // handlers get `&mut self`, so the node is taken out of it while they run
-        let mut events = std::mem::take(&mut self.events);
-        let cancelled = events.emit(event, self);
-        self.events = events;
-        cancelled
-    }
-
-    fn player_action(&mut self, id: Uuid, action: PlayerAction) -> Result<()> {
-        // creative: starting to dig breaks the block; the other actions need nothing here
-        if action.action.0 != ACTION_START_DESTROY_BLOCK || !self.players.contains_key(&id) {
-            return Ok(());
-        }
-        let pos = action.pos;
-        let mut changed = false;
-        if let Some(block) = self.block(pos).filter(|b| *b != AIR.default_state()) {
-            let mut event = BlockBreakEvent {
-                player: id,
-                pos,
-                block,
-                cancelled: false,
-            };
-            changed = !self.emit(&mut event) && self.set_block(pos, AIR.default_state());
-        }
-        self.finish_edit(id, pos, changed, action.sequence)
-    }
-
-    fn place(&mut self, id: Uuid, click: UseItemOn) -> Result<()> {
-        if !self.players.contains_key(&id) {
-            return Ok(());
-        }
-        // ponytail: any hand places; reach, collision and what is already there are not checked
-        let mut changed = false;
-        let mut pos = click.pos;
-        if let Some(face) = Direction::from_id(click.face.0) {
-            pos = click.pos.offset(face);
-            if self.block(pos).is_some() {
-                let mut event = BlockPlaceEvent {
-                    player: id,
-                    pos,
-                    face,
-                    block: STONE.default_state(),
-                    cancelled: false,
-                };
-                changed = !self.emit(&mut event) && self.set_block(pos, event.block);
-            }
-        }
-        self.finish_edit(id, pos, changed, click.sequence)
     }
 
     /// Ends a block edit for `id`. If nothing changed, tells them what is at `pos`, so what their
@@ -1068,32 +1068,17 @@ impl<L: ChunkLoader + 'static> World<L> {
         if let Ok(body) = packet_body(&PlayerInfoRemove { uuids: vec![id] }) {
             self.send_others(id, body);
         }
-        self.emit(&mut PlayerLeaveEvent {
-            player: id,
+        // the handlers hear of it once `World` is done with what it was doing
+        self.departed.push(PlayerLeaveEvent {
+            player: PlayerId {
+                uuid: id,
+                serial: player.serial,
+            },
             name: player.name,
         });
     }
-}
 
-fn chunk_of(pos: Vec3) -> ChunkPos {
-    ChunkPos::new((pos.x.floor() as i32) >> 4, (pos.z.floor() as i32) >> 4)
-}
-
-impl<L: ChunkLoader + 'static> Instance for World<L> {
-    fn handle(&mut self, message: Message) {
-        match message {
-            Message::Join { profile, outbound } => self.join(profile, outbound),
-            Message::Packet { player, body } => self.packet(player, &body),
-            Message::Leave { player, outbound } => {
-                // a connection that was replaced by a newer one of the same player does not
-                // take the newer one with it
-                if self.sessions.is_current(player, &outbound) {
-                    self.leave(player);
-                }
-            }
-        }
-    }
-
+    /// Sends the chunks that waiting players are due, one batch each.
     fn tick(&mut self) {
         self.send_moves();
         let waiting: Vec<Uuid> = self
@@ -1107,5 +1092,174 @@ impl<L: ChunkLoader + 'static> Instance for World<L> {
                 self.leave(id);
             }
         }
+    }
+}
+
+fn chunk_of(pos: Vec3) -> ChunkPos {
+    ChunkPos::new((pos.x.floor() as i32) >> 4, (pos.z.floor() as i32) >> 4)
+}
+
+/// An [`Instance`] where players stand on chunks from a [`ChunkLoader`] and walk around.
+///
+/// A world is a [`Ctx`] with the handlers that run on it, and derefs to the `Ctx`, so
+/// `world.view_distance = 4` and `world.set_block(..)` work on it as they do in a handler.
+pub struct World {
+    ctx: Ctx,
+    events: EventNode<Ctx>,
+}
+
+impl World {
+    /// A world of the overworld type over `loader`. `registries` must be the ones sent to
+    /// the players.
+    pub fn new(registries: &Registries, loader: impl ChunkLoader + 'static) -> Self {
+        Self {
+            ctx: Ctx::new(registries, Box::new(loader)),
+            events: EventNode::new(),
+        }
+    }
+
+    /// The handlers of this world. Events are emitted on it with the [`Ctx`] as the context.
+    ///
+    /// A handler gets the `Ctx` only, so it cannot reach this node while it runs. Attach the
+    /// handlers before the world runs.
+    pub fn events_mut(&mut self) -> &mut EventNode<Ctx> {
+        &mut self.events
+    }
+
+    /// Runs the handlers of `event`. Returns whether it ended up cancelled.
+    fn emit<E: Event>(&mut self, event: &mut E) -> bool {
+        self.events.emit(event, &mut self.ctx)
+    }
+
+    /// Tells the handlers of the players who left since the last call, including those who left
+    /// because of what a handler did.
+    fn flush_departures(&mut self) {
+        while !self.ctx.departed.is_empty() {
+            for mut event in std::mem::take(&mut self.ctx.departed) {
+                self.emit(&mut event);
+            }
+        }
+    }
+
+    fn join(&mut self, profile: Profile, outbound: tokio::sync::mpsc::Sender<Packets>) {
+        let joined = self.ctx.join(profile, outbound);
+        // a player who was replaced by this one has left before this one is here
+        self.flush_departures();
+        if let Some(mut event) = joined {
+            self.emit(&mut event);
+            self.ctx.finish_join(event.player.uuid);
+        }
+    }
+
+    fn packet(&mut self, id: Uuid, body: &[u8]) {
+        if self.ctx.players.contains_key(&id) && self.on_packet(id, body).is_err() {
+            self.ctx.leave(id);
+        }
+    }
+
+    fn on_packet(&mut self, id: Uuid, body: &[u8]) -> Result<()> {
+        let (packet_id, mut payload) = split_packet_id(body)?;
+        match packet_id {
+            ids::play::serverbound::CHAT => {
+                let line = Chat::decode(&mut payload)?;
+                self.chat(id, line.message)
+            }
+            ids::play::serverbound::PLAYER_ACTION => {
+                self.player_action(id, PlayerAction::decode(&mut payload)?)
+            }
+            ids::play::serverbound::USE_ITEM_ON => self.place(id, UseItemOn::decode(&mut payload)?),
+            _ => self.ctx.on_packet(id, packet_id, payload),
+        }
+    }
+
+    fn chat(&mut self, id: Uuid, text: String) -> Result<()> {
+        let Some(mut event) = self.ctx.chat_event(id, text) else {
+            return Ok(());
+        };
+        if self.emit(&mut event) {
+            return Ok(());
+        }
+        self.ctx.say(event)
+    }
+
+    fn player_action(&mut self, id: Uuid, action: PlayerAction) -> Result<()> {
+        // creative: starting to dig breaks the block; the other actions need nothing here
+        if action.action.0 != ACTION_START_DESTROY_BLOCK {
+            return Ok(());
+        }
+        let Some(player) = self.ctx.player_id(id) else {
+            return Ok(());
+        };
+        let pos = action.pos;
+        let mut changed = false;
+        if let Some(block) = self.ctx.block(pos).filter(|b| *b != AIR.default_state()) {
+            let mut event = BlockBreakEvent {
+                player,
+                pos,
+                block,
+                cancelled: false,
+            };
+            changed = !self.emit(&mut event) && self.ctx.set_block(pos, AIR.default_state());
+        }
+        self.ctx.finish_edit(id, pos, changed, action.sequence)
+    }
+
+    fn place(&mut self, id: Uuid, click: UseItemOn) -> Result<()> {
+        let Some(player) = self.ctx.player_id(id) else {
+            return Ok(());
+        };
+        // ponytail: any hand places; reach, collision and what is already there are not checked
+        let mut changed = false;
+        let mut pos = click.pos;
+        if let Some(face) = Direction::from_id(click.face.0) {
+            pos = click.pos.offset(face);
+            if self.ctx.block(pos).is_some() {
+                let mut event = BlockPlaceEvent {
+                    player,
+                    pos,
+                    face,
+                    block: STONE.default_state(),
+                    cancelled: false,
+                };
+                changed = !self.emit(&mut event) && self.ctx.set_block(pos, event.block);
+            }
+        }
+        self.ctx.finish_edit(id, pos, changed, click.sequence)
+    }
+}
+
+impl std::ops::Deref for World {
+    type Target = Ctx;
+
+    fn deref(&self) -> &Ctx {
+        &self.ctx
+    }
+}
+
+impl std::ops::DerefMut for World {
+    fn deref_mut(&mut self) -> &mut Ctx {
+        &mut self.ctx
+    }
+}
+
+impl Instance for World {
+    fn handle(&mut self, message: Message) {
+        match message {
+            Message::Join { profile, outbound } => self.join(profile, outbound),
+            Message::Packet { player, body } => self.packet(player, &body),
+            Message::Leave { player, outbound } => {
+                // a connection that was replaced by a newer one of the same player does not
+                // take the newer one with it
+                if self.ctx.sessions.is_current(player, &outbound) {
+                    self.ctx.leave(player);
+                }
+            }
+        }
+        self.flush_departures();
+    }
+
+    fn tick(&mut self) {
+        self.ctx.tick();
+        self.flush_departures();
     }
 }
