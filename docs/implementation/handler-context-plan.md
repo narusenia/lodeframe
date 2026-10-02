@@ -49,7 +49,7 @@ pub struct PlayerId { uuid: Uuid, serial: u64 }
 
 ### 4. 利用者データの置き場（実装は M2-19）
 
-`Player` の記録に型付きの key で引く表を持つ（`PlayerId` から引く）。`serial` が合わなければ引けないので、退出した人のデータを新しいセッションが読むことは無い。M2-19 の計画書で key の形を決める。
+`Player` の記録に型付きの key で引く表を持つ（`PlayerId` から引く）。`serial` が合わなければ引けないので、退出した人のデータを新しいセッションが読むことは無い。key の形は [user-data-plan.md](user-data-plan.md)（D35）で決めた。
 
 ## やらないこと（M2-01）
 

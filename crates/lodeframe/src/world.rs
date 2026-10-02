@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::{
     chunk::{Chunk, ChunkLoader, ChunkPos, ChunkTracker, Chunks, HEIGHT, MIN_Y},
+    data::Data,
     event::{ChildId, Event, EventNode, Listener, ListenerId, Parents},
     instance::{Instance, Message, Packets, Sessions},
     login::Profile,
@@ -286,6 +287,7 @@ struct Player {
     known_pitch: u8,
     // whether this player is in `World::movers` waiting for the next tick to be sent
     moved: bool,
+    data: Data,
 }
 
 impl Player {
@@ -454,6 +456,9 @@ pub struct Ctx {
     deferred: VecDeque<Deferred>,
     pub(crate) tasks: Tasks,
     pub(crate) scheduler: Scheduler,
+    data: Data,
+    // the data of players who left, until their `PlayerLeaveEvent` has been handled
+    leaving: HashMap<PlayerId, Data>,
 }
 
 impl Ctx {
@@ -483,6 +488,8 @@ impl Ctx {
             deferred: VecDeque::new(),
             tasks: Tasks::new(),
             scheduler: Scheduler::default(),
+            data: Data::default(),
+            leaving: HashMap::new(),
         }
     }
 
@@ -552,6 +559,37 @@ impl Ctx {
     /// with the same UUID is here now.
     pub fn is_online(&self, player: PlayerId) -> bool {
         self.resolve(player).is_some()
+    }
+
+    /// What the game attached to `player`, or `None` if they are gone. It goes with them: a
+    /// player who joins later under the same name starts with nothing.
+    pub fn player_data(&self, player: PlayerId) -> Option<&Data> {
+        self.resolve(player).map(|p| &p.data)
+    }
+
+    /// Like [`player_data`](Self::player_data), to change.
+    pub fn player_data_mut(&mut self, player: PlayerId) -> Option<&mut Data> {
+        self.players
+            .get_mut(&player.uuid)
+            .filter(|p| p.serial == player.serial)
+            .map(|p| &mut p.data)
+    }
+
+    /// The data of a player who is leaving, while the handlers of their [`PlayerLeaveEvent`]
+    /// run. `None` for anyone else, and for them once those handlers are done. Take what is
+    /// worth keeping (`std::mem::take` leaves an empty [`Data`] behind).
+    pub fn leaving_data(&mut self, player: PlayerId) -> Option<&mut Data> {
+        self.leaving.get_mut(&player)
+    }
+
+    /// What the game attached to this world. It lasts as long as the world.
+    pub fn data(&self) -> &Data {
+        &self.data
+    }
+
+    /// Like [`data`](Self::data), to change.
+    pub fn data_mut(&mut self) -> &mut Data {
+        &mut self.data
     }
 
     /// The player's name, or `None` if they are gone.
@@ -658,6 +696,7 @@ impl Ctx {
             known_yaw: 0,
             known_pitch: 0,
             moved: false,
+            data: Data::default(),
         };
         if self.send_join(id, &player, entity_id).is_err() {
             self.sessions.leave(id);
@@ -1206,6 +1245,7 @@ impl Ctx {
             serial: player.serial,
         };
         self.cancel_tasks_of(gone);
+        self.leaving.insert(gone, player.data);
         // the handlers hear of it once `World` is done with what it was doing
         self.departed.push(PlayerLeaveEvent {
             player: gone,
@@ -1272,6 +1312,7 @@ impl World {
         while !self.ctx.departed.is_empty() {
             for mut event in std::mem::take(&mut self.ctx.departed) {
                 self.emit(&mut event);
+                self.ctx.leaving.remove(&event.player);
             }
         }
     }

@@ -1,6 +1,6 @@
 # 利用者データ 実装計画（M2-19）
 
-> **Status**: 計画 — 2026-10-02
+> **Status**: 実装済み — 2026-10-02
 
 要件: REQ-API-007（v0.2 の Player・Instance）。決定: D6・D30・D31（[decisions.md](../decisions.md)）。
 本体の単一 crate 内の変更（`data.rs` 新規・`world.rs`）。設計ゲートの対象外だが、`Data` の形が M2-17（エンティティ）と M2-20（ItemStack）に効くので先に決める。
