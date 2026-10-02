@@ -161,3 +161,87 @@ async fn a_client_that_never_answers_the_known_packs_times_out() {
     assert!(result.is_err());
     assert!(started.elapsed() < Duration::from_secs(2));
 }
+
+/// Runs configuration against a client that sends `messages` before it answers the known packs.
+/// Returns what the server took, or the error that ended it.
+async fn configure_sending(
+    messages: Vec<ServerboundCustomPayload>,
+) -> lodeframe::protocol::Result<Vec<lodeframe::instance::PluginMessage>> {
+    let (a, b) = duplex(1 << 22);
+    let mut server = Connection::new(a, T);
+    let mut client = Connection::new(b, T);
+    server.set_state(State::Configuration);
+    let task =
+        tokio::spawn(
+            async move { configuration::run(&mut server, &Registries::vanilla(), "x").await },
+        );
+    let _: ClientboundCustomPayload = client.read_packet().await.unwrap();
+    let _: UpdateEnabledFeatures = client.read_packet().await.unwrap();
+    let offer: ClientboundKnownPacks = client.read_packet().await.unwrap();
+    for message in &messages {
+        client.write_packet(message).await.unwrap();
+    }
+    client
+        .write_packet(&ServerboundKnownPacks { packs: offer.packs })
+        .await
+        .unwrap();
+    // the server ends here if it refused the messages, otherwise it finishes the configuration
+    loop {
+        let Ok(body) = client.read_frame().await else {
+            break;
+        };
+        let (id, _) = split_packet_id(&body).unwrap();
+        if id == ids::configuration::clientbound::FINISH_CONFIGURATION {
+            client.write_packet(&AckFinishConfiguration).await.unwrap();
+            break;
+        }
+    }
+    task.await.unwrap()
+}
+
+fn payload(channel: &str, data: Vec<u8>) -> ServerboundCustomPayload {
+    ServerboundCustomPayload {
+        channel: lodeframe::protocol::Identifier::new(channel).unwrap(),
+        data,
+    }
+}
+
+#[tokio::test]
+async fn plugin_messages_sent_in_configuration_are_handed_on_in_order() {
+    let taken = configure_sending(vec![
+        payload("minecraft:brand", vec![1, b'v']),
+        payload("mod:hello", vec![9, 9]),
+    ])
+    .await
+    .unwrap();
+
+    let got: Vec<_> = taken
+        .iter()
+        .map(|m| (m.channel.as_str(), m.data.clone()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("minecraft:brand", vec![1, b'v']),
+            ("mod:hello", vec![9, 9])
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_client_that_sends_too_many_plugin_messages_in_configuration_is_cut() {
+    let many = (0..=configuration::MAX_PLUGIN_MESSAGES)
+        .map(|_| payload("mod:spam", Vec::new()))
+        .collect();
+
+    assert!(configure_sending(many).await.is_err());
+}
+
+#[tokio::test]
+async fn a_client_that_sends_too_many_bytes_in_configuration_is_cut() {
+    // each fits the limit of one message, the four together do not fit the limit of all
+    let big = vec![0; configuration::MAX_PLUGIN_BYTES / 3 + 1];
+    let several = (0..4).map(|_| payload("mod:big", big.clone())).collect();
+
+    assert!(configure_sending(several).await.is_err());
+}

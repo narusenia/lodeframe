@@ -34,14 +34,14 @@
 | 1.6 | Velocity modern forwarding | ⬜ | REQ-AUTH-001（v0.2） |
 | 1.7 | BungeeCord / BungeeGuard 転送 | ⬜ | REQ-AUTH-003（v0.2） |
 | 1.8 | HAProxy PROXY protocol v1/v2（任意・必須） | ⬜ | REQ-NET-004（v0.2） |
-| 1.9 | login 段階の plugin message（タイムアウト付き） | ⬜ | REQ-NET-005（v0.2） |
+| 1.9 | login 段階の plugin message（タイムアウト付き） | 🔶 `login::Queries::ask`（D38）。利用者向けのフックは無い | フックは M2-04（pre-login の async イベント） |
 | 1.10 | サーバー一覧（装飾 MOTD・favicon・プレイヤーサンプル・偽装版・ping の種類を区別するイベント） | 🔶 平文 MOTD・在線人数と最大人数（`Server::max_players`。D37） | 残りは REQ-NET-002（v0.3） |
 | 1.11 | 旧形式（1.6 以下）の ping | ⬜ | REQ-NET-011（v0.8） |
 | 1.12 | ping/pong の遅延・キャンセル | ⬜ | REQ-NET-002（v0.3） |
 | 1.13 | Open to LAN | ⬜ | REQ-NET-011（v0.8） |
 | 1.14 | Transfer（送信・受け入れ可否・転送元の判定・イベント） | 🔶 next_state=3 を Login として受けるだけ | REQ-NET-009（v0.3） |
 | 1.15 | Cookie の保存・取得 | ⬜ | REQ-NET-009（v0.3） |
-| 1.16 | play 段階の plugin message の送受信 | 🔶 brand の送信のみ | REQ-NET-005（v0.2） |
+| 1.16 | play 段階の plugin message の送受信 | ✅ `PluginMessageEvent`・`ctx.send_plugin_message`・`ctx.client_brand`（D38） | — |
 | 1.17 | リソースパック（送信・削除・必須・状態イベント・configuration 中の送信） | ⬜ | REQ-NET-008（v0.3） |
 | 1.18 | Server links | ⬜ | REQ-PROTO-005（v0.4、Minestom も直送のみ） |
 | 1.19 | Custom report details | ⬜ | REQ-PROTO-005（v0.4、同上） |

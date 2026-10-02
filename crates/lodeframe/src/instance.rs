@@ -20,7 +20,11 @@ use tokio::sync::{
     watch,
 };
 
-use crate::{clock::Clock, login::Profile, protocol::Uuid};
+use crate::{
+    clock::Clock,
+    login::Profile,
+    protocol::{Identifier, Uuid},
+};
 
 /// One tick: 20 ticks per second.
 pub const TICK: Duration = Duration::from_millis(50);
@@ -71,6 +75,15 @@ pub trait Instance {
     fn shutdown(&mut self) {}
 }
 
+/// A plugin message: bytes on a channel, whose meaning the channel defines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginMessage {
+    /// What the message is for, such as `minecraft:brand`.
+    pub channel: Identifier,
+    /// The message itself.
+    pub data: Vec<u8>,
+}
+
 /// What connections tell an instance.
 #[derive(Debug)]
 pub enum Message {
@@ -80,6 +93,9 @@ pub enum Message {
         profile: Profile,
         /// Bodies (packet id + payload) for the client; see [`Sessions`].
         outbound: mpsc::Sender<Packets>,
+        /// What the client sent on plugin channels while it was joining, oldest first. The brand
+        /// it reports is one.
+        plugin_messages: Vec<PluginMessage>,
     },
     /// A packet from a player: id and payload.
     Packet {

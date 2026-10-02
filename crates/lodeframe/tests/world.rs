@@ -6,6 +6,7 @@ use lodeframe::{
     cooldown::Cooldown,
     data::Key,
     event::{Event, EventNode, Listener},
+    instance::PluginMessage,
     protocol::{
         BlockPos, Direction, Encode, VarInt, Vec3,
         block::{AIR, COBBLESTONE, STONE},
@@ -25,7 +26,7 @@ use lodeframe::{
     text::{Color, Component},
     world::{
         BlockBreakEvent, BlockPlaceEvent, ChatEvent, Ctx, PlayerEvent, PlayerJoinEvent,
-        PlayerLeaveEvent, ShutdownEvent, World,
+        PlayerLeaveEvent, PluginMessageEvent, ShutdownEvent, World,
     },
 };
 
@@ -2345,4 +2346,151 @@ fn a_message_sent_while_shutting_down_arrives_before_the_disconnect() {
 
     let told = steve.drain();
     assert!(position(&told, out::SYSTEM_CHAT) < position(&told, out::DISCONNECT));
+}
+
+fn channel(name: &str) -> lodeframe::protocol::Identifier {
+    lodeframe::protocol::Identifier::new(name).unwrap()
+}
+
+#[test]
+fn a_plugin_message_from_a_player_reaches_the_handlers_of_its_channel() {
+    let mut env = env();
+    let seen = log();
+    let l = seen.clone();
+    let mut node = EventNode::new();
+    node.only_if::<PluginMessageEvent>(|e, _| e.channel.as_str() == "test:wanted");
+    node.on(move |e: &mut PluginMessageEvent, ctx: &mut Ctx| {
+        note(
+            &l,
+            format!(
+                "{} {:?} {:?}",
+                ctx.name(e.player).unwrap(),
+                e.channel.as_str(),
+                e.data
+            ),
+        );
+    });
+    env.instance_mut().events_mut().add_child(node);
+    let steve = env.connect("Steve");
+
+    env.plugin_message(&steve, "test:other", b"no");
+    env.plugin_message(&steve, "test:wanted", b"hi");
+
+    assert_eq!(*seen.borrow(), [r#"Steve "test:wanted" [104, 105]"#]);
+}
+
+#[test]
+fn a_handler_can_send_a_plugin_message_to_a_player() {
+    let mut env = env();
+    let mut steve = env.connect("Steve");
+    env.instance_mut()
+        .events_mut()
+        .on(|e: &mut PluginMessageEvent, ctx: &mut Ctx| {
+            let mut echo = e.data.clone();
+            echo.reverse();
+            ctx.send_plugin_message(e.player, &e.channel, &echo);
+        });
+    steve.drain();
+
+    env.plugin_message(&steve, "test:echo", &[1, 2, 3]);
+
+    let sent = steve.drain_as::<lodeframe::protocol::packets::play::ClientboundCustomPayload>();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].channel, channel("test:echo"));
+    assert_eq!(sent[0].data, [3, 2, 1]);
+}
+
+#[test]
+fn a_plugin_message_to_a_player_who_left_goes_nowhere() {
+    let mut env = env();
+    let mut alex = env.connect("Alex");
+    let steve = env.connect("Steve");
+    let gone = env.instance().player_id(steve.uuid()).unwrap();
+    env.disconnect(steve);
+    alex.drain();
+
+    env.instance_mut()
+        .send_plugin_message(gone, &channel("test:x"), b"x");
+
+    assert!(alex.drain().is_empty());
+}
+
+#[test]
+fn too_long_a_plugin_message_is_not_sent() {
+    let mut env = env();
+    let mut steve = env.connect("Steve");
+    let id = env.instance().player_id(steve.uuid()).unwrap();
+    steve.drain();
+
+    let long = vec![0; lodeframe::protocol::packets::MAX_CLIENTBOUND_PAYLOAD + 1];
+    env.instance_mut()
+        .send_plugin_message(id, &channel("test:x"), &long);
+
+    assert!(steve.drain().is_empty());
+    assert!(env.instance().is_online(id));
+}
+
+fn brand_message(brand: &str) -> PluginMessage {
+    let mut data = Vec::new();
+    brand.to_owned().encode(&mut data).unwrap();
+    PluginMessage {
+        channel: channel("minecraft:brand"),
+        data,
+    }
+}
+
+#[test]
+fn what_a_client_sent_while_joining_arrives_after_the_join_with_its_brand_known() {
+    let mut env = env();
+    let seen = log();
+    let (l1, l2) = (seen.clone(), seen.clone());
+    env.instance_mut()
+        .events_mut()
+        .on(move |e: &mut PlayerJoinEvent, ctx: &mut Ctx| {
+            note(&l1, format!("join {:?}", ctx.client_brand(e.player)));
+        })
+        .on(move |e: &mut PluginMessageEvent, _: &mut Ctx| {
+            note(&l2, format!("message {}", e.channel.as_str()));
+        });
+
+    let steve = env.connect_with(
+        "Steve",
+        vec![
+            brand_message("fabric"),
+            PluginMessage {
+                channel: channel("mod:hello"),
+                data: Vec::new(),
+            },
+        ],
+    );
+
+    assert_eq!(
+        *seen.borrow(),
+        [
+            r#"join Some("fabric")"#,
+            "message minecraft:brand",
+            "message mod:hello"
+        ]
+    );
+    let id = env.instance().player_id(steve.uuid()).unwrap();
+    assert_eq!(env.instance().client_brand(id), Some("fabric"));
+}
+
+#[test]
+fn a_player_without_a_brand_has_none() {
+    let mut env = env();
+    let steve = env.connect("Steve");
+    let id = env.instance().player_id(steve.uuid()).unwrap();
+    assert_eq!(env.instance().client_brand(id), None);
+
+    let alex = env.connect_with(
+        "Alex",
+        vec![PluginMessage {
+            channel: channel("minecraft:brand"),
+            data: vec![0xff],
+        }],
+    );
+    // bytes that are no string are no brand
+    let id = env.instance().player_id(alex.uuid()).unwrap();
+    assert_eq!(env.instance().client_brand(id), None);
 }

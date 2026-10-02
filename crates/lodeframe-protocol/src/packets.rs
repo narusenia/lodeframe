@@ -1,6 +1,49 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Hand-written packet definitions, grouped by connection state.
 
+/// The longest `data` of a plugin message that a client sends (vanilla's limit).
+pub const MAX_SERVERBOUND_PAYLOAD: usize = 32767;
+/// The longest `data` of a plugin message that the server sends (vanilla's limit).
+pub const MAX_CLIENTBOUND_PAYLOAD: usize = 1_048_576;
+
+/// Defines a plugin message packet: a channel, then `data` to the end of the packet, at most
+/// `$max` bytes. Used inside a module that has `Identifier`, `Encode`, `Decode` and `Packet`.
+macro_rules! payload_packet {
+    ($(#[$meta:meta])* $name:ident, max = $max:expr) => {
+        #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+        #[lodeframe(crate = crate)]
+        $(#[$meta])*
+        pub struct $name {
+            /// What the message is for.
+            pub channel: Identifier,
+            /// The message itself, whatever the `channel` defines.
+            pub data: Vec<u8>,
+        }
+
+        impl Encode for $name {
+            fn encode(&self, w: &mut impl std::io::Write) -> crate::Result<()> {
+                if self.data.len() > $max {
+                    return Err(crate::Error::InvalidValue("plugin message too long"));
+                }
+                self.channel.encode(w)?;
+                w.write_all(&self.data)?;
+                Ok(())
+            }
+        }
+
+        impl Decode for $name {
+            fn decode(r: &mut &[u8]) -> crate::Result<Self> {
+                let channel = Identifier::decode(r)?;
+                if r.len() > $max {
+                    return Err(crate::Error::InvalidValue("plugin message too long"));
+                }
+                let data = crate::take(r, r.len())?.to_vec();
+                Ok(Self { channel, data })
+            }
+        }
+    };
+}
+
 /// Handshake state.
 pub mod handshake {
     use crate::{Decode, Encode, Packet, VarInt};
@@ -61,7 +104,97 @@ pub mod status {
 
 /// Login state.
 pub mod login {
-    use crate::{Decode, Encode, Packet, Uuid, VarInt};
+    use crate::{Decode, Encode, Identifier, Packet, Uuid, VarInt};
+
+    /// The server asks the client something on a `channel` of its own (the way Velocity passes the
+    /// player on). The client answers with a [`CustomQueryAnswer`] of the same
+    /// `transaction_id`.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::login::clientbound::CUSTOM_QUERY, state = Login, side = Clientbound)]
+    pub struct CustomQuery {
+        /// Pairs the answer with this question.
+        pub transaction_id: VarInt,
+        /// What the question is for.
+        pub channel: Identifier,
+        /// The question itself, taking the rest of the packet.
+        pub data: Vec<u8>,
+    }
+
+    impl Encode for CustomQuery {
+        fn encode(&self, w: &mut impl std::io::Write) -> crate::Result<()> {
+            if self.data.len() > super::MAX_CLIENTBOUND_PAYLOAD {
+                return Err(crate::Error::InvalidValue("plugin message too long"));
+            }
+            self.transaction_id.encode(w)?;
+            self.channel.encode(w)?;
+            w.write_all(&self.data)?;
+            Ok(())
+        }
+    }
+
+    impl Decode for CustomQuery {
+        fn decode(r: &mut &[u8]) -> crate::Result<Self> {
+            let transaction_id = VarInt::decode(r)?;
+            let channel = Identifier::decode(r)?;
+            if r.len() > super::MAX_CLIENTBOUND_PAYLOAD {
+                return Err(crate::Error::InvalidValue("plugin message too long"));
+            }
+            let data = crate::take(r, r.len())?.to_vec();
+            Ok(Self {
+                transaction_id,
+                channel,
+                data,
+            })
+        }
+    }
+
+    /// The client's answer to a [`CustomQuery`].
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::login::serverbound::CUSTOM_QUERY_ANSWER, state = Login, side = Serverbound)]
+    pub struct CustomQueryAnswer {
+        /// The `transaction_id` of the question.
+        pub transaction_id: VarInt,
+        /// The answer, taking the rest of the packet; `None` if the client does not know the
+        /// channel.
+        pub data: Option<Vec<u8>>,
+    }
+
+    impl Encode for CustomQueryAnswer {
+        fn encode(&self, w: &mut impl std::io::Write) -> crate::Result<()> {
+            self.transaction_id.encode(w)?;
+            match &self.data {
+                Some(data) => {
+                    if data.len() > super::MAX_SERVERBOUND_PAYLOAD {
+                        return Err(crate::Error::InvalidValue("plugin message too long"));
+                    }
+                    true.encode(w)?;
+                    w.write_all(data)?;
+                }
+                None => false.encode(w)?,
+            }
+            Ok(())
+        }
+    }
+
+    impl Decode for CustomQueryAnswer {
+        fn decode(r: &mut &[u8]) -> crate::Result<Self> {
+            let transaction_id = VarInt::decode(r)?;
+            let data = if bool::decode(r)? {
+                if r.len() > super::MAX_SERVERBOUND_PAYLOAD {
+                    return Err(crate::Error::InvalidValue("plugin message too long"));
+                }
+                Some(crate::take(r, r.len())?.to_vec())
+            } else {
+                None
+            };
+            Ok(Self {
+                transaction_id,
+                data,
+            })
+        }
+    }
 
     /// The client's name and the UUID it claims. Offline mode ignores the UUID.
     #[derive(Debug, Clone, PartialEq, Encode, Decode, Packet)]
@@ -184,6 +317,12 @@ pub mod configuration {
             let data = crate::take(r, r.len())?.to_vec();
             Ok(Self { channel, data })
         }
+    }
+
+    payload_packet! {
+        /// A plugin message from the client while it joins; the brand it reports is one.
+        #[packet(id = crate::ids::configuration::serverbound::CUSTOM_PAYLOAD, state = Configuration, side = Serverbound)]
+        ServerboundCustomPayload, max = super::MAX_SERVERBOUND_PAYLOAD
     }
 
     /// The server offers its packs.
@@ -786,6 +925,18 @@ pub mod play {
         pub reason: Component,
     }
 
+    payload_packet! {
+        /// A plugin message to the client.
+        #[packet(id = crate::ids::play::clientbound::CUSTOM_PAYLOAD, state = Play, side = Clientbound)]
+        ClientboundCustomPayload, max = super::MAX_CLIENTBOUND_PAYLOAD
+    }
+
+    payload_packet! {
+        /// A plugin message from the client.
+        #[packet(id = crate::ids::play::serverbound::CUSTOM_PAYLOAD, state = Play, side = Serverbound)]
+        ServerboundCustomPayload, max = super::MAX_SERVERBOUND_PAYLOAD
+    }
+
     /// A message from the server rather than a player.
     #[derive(Debug, Clone, PartialEq, Encode, Packet)]
     #[lodeframe(crate = crate)]
@@ -924,6 +1075,8 @@ mod tests {
     use super::{configuration::*, login::*, play::*};
     // both the play and the configuration packet are called this
     use super::play::Disconnect;
+    // both the play and the configuration plugin message are called this
+    use super::configuration::ClientboundCustomPayload;
     use lodeframe_text::Component;
 
     use crate::{Decode, Encode, Identifier, Nbt, Uuid, VarInt};
@@ -1274,6 +1427,73 @@ mod tests {
         rot.encode(&mut buf).unwrap();
         assert_eq!(buf, [0xac, 0x02, 0x01, 0x40, 0xe0]);
         assert_eq!(MoveEntityRot::decode(&mut buf.as_slice()).unwrap(), rot);
+    }
+
+    #[test]
+    fn plugin_messages_take_the_rest_of_the_packet() {
+        let play = super::play::ClientboundCustomPayload {
+            channel: Identifier::new("a:b").unwrap(),
+            data: vec![1, 2, 3],
+        };
+        roundtrip(play.clone());
+        let mut buf = Vec::new();
+        play.encode(&mut buf).unwrap();
+        assert_eq!(&buf[buf.len() - 3..], [1, 2, 3]);
+
+        roundtrip(super::play::ServerboundCustomPayload {
+            channel: Identifier::new("a:b").unwrap(),
+            data: Vec::new(),
+        });
+        roundtrip(super::configuration::ServerboundCustomPayload {
+            channel: Identifier::new("minecraft:brand").unwrap(),
+            data: vec![9],
+        });
+    }
+
+    #[test]
+    fn a_plugin_message_over_the_limit_is_refused() {
+        let channel = Identifier::new("a:b").unwrap();
+        let mut buf = Vec::new();
+        let too_long = super::play::ServerboundCustomPayload {
+            channel: channel.clone(),
+            data: vec![0; super::MAX_SERVERBOUND_PAYLOAD + 1],
+        };
+        assert!(too_long.encode(&mut buf).is_err());
+
+        let mut wire = Vec::new();
+        channel.encode(&mut wire).unwrap();
+        wire.extend(vec![0; super::MAX_SERVERBOUND_PAYLOAD + 1]);
+        assert!(super::play::ServerboundCustomPayload::decode(&mut wire.as_slice()).is_err());
+        // the server may send more than a client may
+        wire.truncate(0);
+        channel.encode(&mut wire).unwrap();
+        wire.extend(vec![0; super::MAX_SERVERBOUND_PAYLOAD + 1]);
+        assert!(super::play::ClientboundCustomPayload::decode(&mut wire.as_slice()).is_ok());
+    }
+
+    #[test]
+    fn a_login_query_and_its_answer_round_trip() {
+        roundtrip(CustomQuery {
+            transaction_id: VarInt(7),
+            channel: Identifier::new("velocity:player_info").unwrap(),
+            data: vec![4],
+        });
+        roundtrip(CustomQueryAnswer {
+            transaction_id: VarInt(7),
+            data: Some(vec![1, 2]),
+        });
+        roundtrip(CustomQueryAnswer {
+            transaction_id: VarInt(7),
+            data: None,
+        });
+        let mut buf = Vec::new();
+        CustomQueryAnswer {
+            transaction_id: VarInt(1),
+            data: None,
+        }
+        .encode(&mut buf)
+        .unwrap();
+        assert_eq!(buf, [1, 0]);
     }
 
     #[test]

@@ -377,7 +377,9 @@ struct Echo {
 impl Instance for Echo {
     fn handle(&mut self, message: Message) {
         match message {
-            Message::Join { profile, outbound } => {
+            Message::Join {
+                profile, outbound, ..
+            } => {
                 self.log
                     .lock()
                     .unwrap()
@@ -414,7 +416,13 @@ async fn play_relays_packets_both_ways_and_keeps_keepalives_to_itself() {
         uuid: Uuid(7),
         name: "Steve".into(),
     };
-    let task = tokio::spawn(play::run_with(server, profile, handle, quick_keep_alive()));
+    let task = tokio::spawn(play::run_with(
+        server,
+        profile,
+        handle,
+        quick_keep_alive(),
+        Vec::new(),
+    ));
 
     // the server asks, and the answer stays between it and the connection
     let asked = read_keep_alive(&mut client).await;
@@ -483,7 +491,9 @@ struct Probe {
 impl Instance for Probe {
     fn handle(&mut self, message: Message) {
         match message {
-            Message::Join { profile, outbound } => self.sessions.join(profile.uuid, outbound),
+            Message::Join {
+                profile, outbound, ..
+            } => self.sessions.join(profile.uuid, outbound),
             Message::Latency { rtt, .. } => self.latencies.lock().unwrap().push(rtt),
             _ => {}
         }
@@ -526,6 +536,7 @@ fn probed_connection() -> Probed {
         profile,
         handle.clone(),
         quick_keep_alive(),
+        Vec::new(),
     ));
     Probed {
         client,
