@@ -85,7 +85,7 @@
 | ✅ | M2-01 | ハンドラの文脈とプレイヤーのハンドル | — | #33 |
 | ✅ | M2-02 | イベントノードの拡張 | M2-01 | #34 |
 | ✅ | M2-03 | `ctx.spawn` | M2-01 | #35 |
-| ✅ | M2-04 | ログイン前の async イベント（[計画](login-event-plan.md)） | M2-06 | — |
+| ✅ | M2-04 | ログイン前の async イベント（[計画](login-event-plan.md)） | M2-06 | #45 |
 | ✅ | M2-05 | スケジューラ（Cooldown は M2-19 の後） | M2-01, M2-03 | #36 |
 | ✅ | M2-06 | サーバーの設定・在線人数・keep alive と遅延（[計画](server-config-plan.md)） | — | #39 |
 | ✅ | M2-07 | plugin message（[計画](plugin-message-plan.md)） | M2-06 | #41 |
