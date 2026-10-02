@@ -1,6 +1,6 @@
 # イベントノードの拡張 実装計画（M2-02）
 
-> **Status**: 計画中 — 2026-10-02
+> **Status**: 計画確定（実装前） — 2026-10-02
 
 要件: REQ-API-009。決定: D6・D16・D29 の (2)・D31（[decisions.md](../decisions.md)）。Minestom との対照は [minestom-parity.md](minestom-parity.md) の 6.1〜6.12。
 `event.rs` と `world.rs` にまたがる。M2-16（操作イベント）・M2-17（エンティティ）・M2-21（GUI）・M2-25（`derive(Event)`）が、この形の上に載る。
@@ -40,11 +40,16 @@ node.off(id);
 
 ```rust
 let mut game = EventNode::<Ctx>::new();
-game.only_if::<PlayerEvent>(|e, ctx| ctx.is_online(e.player()));   // PlayerEvent は 5. の親
+game.only_if::<PlayerEvent>(|e, ctx| ctx.is_online(e.player()));   // 他の型は素通し
+let mut chat = EventNode::<Ctx>::new();
+chat.only_for::<PlayerChatEvent>(|e, ctx| ..);                      // この型専用。他の型は止める
 ```
 
-- ノードの `only_if::<E>(pred)` は、**E（または E を親に持つイベント）が来たときだけ**この部分木を通すかを決める。それ以外の型のイベントは素通し
-- 理由: 型を限定するノード（Minestom の `EventNode.type`）にすると、1 つのゲームのハンドラを 1 つのノードに束ねられない。素通しなら、`game` の下に chat・block・move のハンドラを並べたまま「このプレイヤーがゲーム中のときだけ」と書ける
+- どちらもノードの**ゲート**。条件を見るのは E（または E を親に持つイベント）が来たときだけで、偽ならその部分木を通さない
+- `only_if::<E>(pred)`: E 以外の型のイベントは**素通し**。`game` の下に chat・block・move のハンドラを並べたまま「このプレイヤーがゲーム中のときだけ」と書ける
+- `only_for::<E>(pred)`: E 以外の型は**止める**（Minestom の `EventNode.type` と同じ）。型専用のノードを明示したいとき用。条件が要らなければ `only_for::<E>(|_, _| true)`
+- 1 つのノードにゲートは 1 つ。2 つ目を付けたら置き換える（積みたいときは入れ子にする）。内部は「E の TypeId・他の型を通すか・pred」だけなので、2 つは同じ仕組みの別の既定値
+- 理由: 素通しだけだと型専用の木を作れず、型限定だけだと 1 ゲーム 1 ノードに束ねられない。差は 1 ビットなので両方持つ
 - 利用者データで絞る（REQ-API-009 の「利用者データ」）は、`pred` が `ctx` を読めば足りる。key の形は M2-19 で決まるので、ここではテストに使わない
 
 ### 4. 発火中の追加と内側のイベントは遅延キュー（D29 の (2)）
@@ -93,11 +98,11 @@ node.on::<dyn PlayerEvent>(|e, ctx| ..);   // チャットもブロック設置�
 - 今の `Server` は Instance を 1 つしか走らせない（`RunningServer::instance()`）。**サーバー全体のルートと Instance ごとのノードの二層**は、複数 Instance が来る単位がやる（受け皿 → 下の表）
 - この単位では、`World` が持つ木が「その Instance のノード」であることを、doc と `events_mut` のテスト（2 つの `World` が互いのハンドラを呼ばない）で固定する
 
-## 確認したいこと
+## 確認して決めたこと（2026-10-02）
 
-1. ID を `AtomicU64` で発番してよいか（4.）。代わりに、遅延追加の ID を `Ctx` 側の連番にして、木の連番と型で分ける案もある（`ListenerId` が 2 種類になる）
-2. `only_if` を型限定でなく**素通し**にする設計でよいか（3.）
-3. 優先度を木全体の総順位にしない設計でよいか（1.）。ロビーの保護を「ゲームのハンドラより先」にしたいだけなら、ノード単位で足りるはず
+1. ID は**プロセス全体の `AtomicU64`** で発番する（4.）。発番はゲームの状態ではないので、D6 の対象外と読む。実装時に decisions.md へ D として残す
+2. ゲートは**素通し（`only_if`）を基本**にし、型専用（`only_for`）も持つ（3.）
+3. 優先度は**ハンドラとノード単位**。総順位にしない（1.）
 
 ## やらないこと（M2-02）
 
@@ -119,6 +124,7 @@ node.on::<dyn PlayerEvent>(|e, ctx| ..);   // チャットもブロック設置�
 - `times(1)` は 1 回で外れる。`until` が成り立つと呼ばれない。`off(id)` で外れる。外れた後に同じ型の別のハンドラは影響を受けない
 - `ignore_cancelled` は、先のハンドラがキャンセルした後に呼ばれない。付けなければ呼ばれる
 - `only_if` が偽の間、部分木のハンドラが呼ばれない。別の型のイベントは通る。真に戻れば呼ばれる
+- `only_for` は、別の型のイベントを通さない。条件が偽の間は指定の型も通さない。ゲートを付け直すと置き換わる
 - 親 trait のハンドラが、2 種類のイベントで呼ばれる。具体的な型のハンドラが先
 - ハンドラの中の `ctx.emit` は、**その発火が終わってから**、同じ `handle` の呼び出しのうちに届く。入れ子（A が B を、B が C を起こす）が順に届く。自分を再発火し続けるハンドラが上限で止まる
 - ハンドラの中の `ctx.add_listener` は、その発火には混ざらず、次の発火から効く。`ctx.remove_listener` も同様
@@ -131,4 +137,4 @@ node.on::<dyn PlayerEvent>(|e, ctx| ..);   // チャットもブロック設置�
 1. `event.rs`: `ListenerId`、優先度、`listen` のオプション、`off`、外れる処理（単体テスト）
 2. `event.rs`: `only_if`、`Bundle`、`Parents`（単体テスト）
 3. `world.rs`: 遅延キュー、`Ctx` の `emit` / `add_listener` / `add_node` / `remove_*`、`PlayerEvent` と既存 5 イベントの `parents`（ハーネスのテスト）
-4. 文書: minestom-parity の 6.x、REQ-API-009 の受入条件、backlog、architecture の EventNode の節、decisions（確認したい 1 の結果を D として）
+4. 文書: minestom-parity の 6.x、REQ-API-009 の受入条件、backlog、architecture の EventNode の節、decisions（ID の発番を D として）
