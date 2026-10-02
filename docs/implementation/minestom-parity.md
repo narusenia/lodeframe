@@ -266,7 +266,7 @@
 | 8.10 | ThreadProvider | ⬜ | 別枠（D6、同上） |
 | 8.11 | Acquirable（別スレッドの物へ安全に触る） | 不要 | Instance 間は message passing のみ（D6）。所有は型が保証する |
 | 8.12 | クライアントの tick 速度制御 | ⬜ | REQ-UI-007（v0.7、Minestom も直送のみ） |
-| 8.13 | Cooldown 等の時間の補助 | ⬜ | REQ-API-006（v0.2）。M2-19（利用者データ）の後。D34 |
+| 8.13 | Cooldown 等の時間の補助 | ✅ `Cooldown`（`Data` の key に入れる。サーバー側の判定のみ。D36） | vanilla のアイテムのクールダウン表示は M2-20 以降 |
 
 ## 9. Adventure 統合
 
