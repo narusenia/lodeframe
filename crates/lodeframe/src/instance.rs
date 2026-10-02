@@ -15,7 +15,10 @@ use std::{
     time::Duration,
 };
 
-use tokio::sync::mpsc::{self, error::TryRecvError};
+use tokio::sync::{
+    mpsc::{self, error::TryRecvError},
+    watch,
+};
 
 use crate::{clock::Clock, login::Profile, protocol::Uuid};
 
@@ -62,6 +65,10 @@ pub trait Instance {
     fn handle(&mut self, message: Message);
     /// Advances the world by one tick.
     fn tick(&mut self);
+    /// Called once on the instance's thread when it is asked to shut down, see
+    /// [`InstanceHandle::shutdown`]: the place to save, and to tell the players why they are
+    /// being disconnected. The instance ticks no more after it. Does nothing by default.
+    fn shutdown(&mut self) {}
 }
 
 /// What connections tell an instance.
@@ -166,6 +173,8 @@ pub struct Runner<I> {
     inbox: mpsc::Receiver<Message>,
     metrics: Arc<TickMetrics>,
     pacing: Pacing,
+    shutdown: Arc<AtomicBool>,
+    finished: watch::Sender<bool>,
 }
 
 impl<I: Instance> Runner<I> {
@@ -173,9 +182,13 @@ impl<I: Instance> Runner<I> {
     pub fn new(instance: I) -> (Self, InstanceHandle) {
         let (tx, inbox) = mpsc::channel(INBOX);
         let metrics = Arc::new(TickMetrics::default());
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (finished, done) = watch::channel(false);
         let handle = InstanceHandle {
             inbox: tx,
             stop: Arc::new(AtomicBool::new(false)),
+            shutdown: shutdown.clone(),
+            done,
             metrics: metrics.clone(),
         };
         (
@@ -184,6 +197,8 @@ impl<I: Instance> Runner<I> {
                 inbox,
                 metrics,
                 pacing: Pacing::default(),
+                shutdown,
+                finished,
             },
             handle,
         )
@@ -218,7 +233,8 @@ impl<I: Instance> Runner<I> {
         self.metrics.busy_max_ns.fetch_max(ns, Ordering::Relaxed);
     }
 
-    /// Ticks every [`Pacing::tick`] (by default [`TICK`]) until `stop` is set or all handles are gone.
+    /// Ticks every [`Pacing::tick`] (by default [`TICK`]) until `stop` is set, a shutdown is
+    /// asked for ([`Instance::shutdown`] runs then) or all handles are gone.
     ///
     /// A tick that runs late is followed by ticks back to back until the loop has caught up.
     /// Past [`Pacing::max_behind`] (by default [`MAX_BEHIND`]) it gives up catching up and starts over from now.
@@ -226,6 +242,10 @@ impl<I: Instance> Runner<I> {
         let mut next = clock.now();
         let mut reported = false;
         while !stop.load(Ordering::Relaxed) {
+            if self.shutdown.load(Ordering::Acquire) {
+                self.instance.shutdown();
+                break;
+            }
             let now = clock.now();
             if now < next {
                 clock.sleep_until(next);
@@ -263,6 +283,8 @@ impl<I: Instance> Runner<I> {
             self.record(clock.now().saturating_duration_since(started));
             next += self.pacing.tick;
         }
+        // nobody is waiting if every handle is gone
+        let _ = self.finished.send(true);
     }
 }
 
@@ -271,6 +293,8 @@ impl<I: Instance> Runner<I> {
 pub struct InstanceHandle {
     inbox: mpsc::Sender<Message>,
     stop: Arc<AtomicBool>,
+    shutdown: Arc<AtomicBool>,
+    done: watch::Receiver<bool>,
     metrics: Arc<TickMetrics>,
 }
 
@@ -314,6 +338,20 @@ impl InstanceHandle {
     /// Asks the instance thread to stop after its current tick.
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
+    }
+
+    /// Asks the instance thread to shut down: at its next tick it runs [`Instance::shutdown`]
+    /// and ends. Unlike [`stop`](Self::stop), the instance gets to say goodbye first. Wait for it
+    /// with [`stopped`](Self::stopped).
+    pub fn shutdown(&self) {
+        self.shutdown.store(true, Ordering::Release);
+    }
+
+    /// Waits until the instance thread has ended its loop, whether it was shut down, stopped or
+    /// lost every handle. Returns at once if it already has.
+    pub async fn stopped(&self) {
+        // an error means the thread is gone without having said so, which is also stopped
+        let _ = self.done.clone().wait_for(|done| *done).await;
     }
 
     /// How the tick loop has been doing, see [`TickStats`]. Only [`Runner::run`] counts; a

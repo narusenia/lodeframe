@@ -9,6 +9,7 @@ use lodeframe::{
         FrameDecoder, VarInt, encode_frame, packet_body,
         packets::{
             handshake::Intention,
+            play::Disconnect,
             status::{StatusRequest, StatusResponse},
         },
         split_packet_id,
@@ -187,6 +188,40 @@ async fn stopping_the_server_ends_the_connections_and_wait_returns() {
         .await;
     assert!(ended.is_err());
     server.wait().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shutting_down_tells_the_players_why_before_it_returns() {
+    let server = start_with(|s| s).await;
+    let mut steve = Bot::connect(server.addr(), "Steve").await.unwrap();
+    let mut alex = Bot::connect(server.addr(), "Alex").await.unwrap();
+    wait_for_online(&server, 2).await;
+
+    server.shutdown().await;
+
+    // every connection has written what it was sent, so the players are gone
+    assert_eq!(server.online(), 0);
+    for bot in [&mut steve, &mut alex] {
+        let mut told = false;
+        let ended = bot
+            .recv_until(Duration::from_secs(10), |frame| {
+                told |= frame.is::<Disconnect>();
+                None::<()>
+            })
+            .await;
+        assert!(ended.is_err());
+        assert!(told, "{} was not told why", bot.name());
+    }
+    server.wait().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shutting_down_an_empty_server_returns_at_once() {
+    let server = start_with(|s| s.shutdown_timeout(Duration::from_secs(60))).await;
+
+    tokio::time::timeout(Duration::from_secs(10), server.shutdown())
+        .await
+        .expect("an empty server shuts down quickly");
 }
 
 #[tokio::test(flavor = "multi_thread")]

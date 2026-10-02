@@ -98,6 +98,19 @@ impl Event for PlayerLeaveEvent {
     }
 }
 
+/// The server is shutting down. Every player is still here, so a handler can save what it
+/// needs; once the handlers are done, everyone is disconnected with [`reason`](Self::reason) and
+/// each leaves as usual, with a [`PlayerLeaveEvent`].
+///
+/// It cannot be cancelled: whether to stop is up to whoever stops the server.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShutdownEvent {
+    /// What the players are told. It starts as "Server closed"; a handler can change it.
+    pub reason: Component,
+}
+
+impl Event for ShutdownEvent {}
+
 /// A player said something in the chat. Cancel it to keep it from the others, or replace
 /// [`message`](Self::message) to change what they see.
 #[derive(Debug, Clone, PartialEq)]
@@ -1021,9 +1034,12 @@ impl Ctx {
     /// Tells `id` why they are being disconnected, then removes them as if they had left. Their
     /// connection ends once it has written the message.
     fn kick(&mut self, id: Uuid, reason: &str) {
-        if let Ok(body) = packet_body(&Disconnect {
-            reason: Component::text(reason),
-        }) {
+        self.kick_with(id, Component::text(reason));
+    }
+
+    /// Like [`kick`](Self::kick), with a styled `reason`.
+    fn kick_with(&mut self, id: Uuid, reason: Component) {
+        if let Ok(body) = packet_body(&Disconnect { reason }) {
             self.sessions.send(id, body);
         }
         self.leave(id);
@@ -1476,6 +1492,20 @@ impl Instance for World {
                     self.ctx.leave(player);
                 }
             }
+        }
+        self.settle();
+    }
+
+    fn shutdown(&mut self) {
+        let mut event = ShutdownEvent {
+            reason: Component::text("Server closed"),
+        };
+        self.emit(&mut event);
+        // what the handlers asked for goes first, so that it can still reach the players
+        self.settle();
+        let players: Vec<Uuid> = self.ctx.players.keys().copied().collect();
+        for id in players {
+            self.ctx.kick_with(id, event.reason.clone());
         }
         self.settle();
     }

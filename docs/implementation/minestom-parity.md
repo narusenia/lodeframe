@@ -260,7 +260,7 @@
 | 8.4 | tick の開始時か終了時か | ✅ `at_end` | — |
 | 8.5 | 次回を自分で決めるタスク | ✅ `Next::After` | — |
 | 8.6 | Executor として使う | 不要 | Instance スレッドへの投入は `ctx.spawn` の戻し（D16、実装済み: D33）で足りる |
-| 8.7 | シャットダウン時のタスク | ⬜ | REQ-NET-006（v0.2、停止処理と一緒に） |
+| 8.7 | シャットダウン時のタスク | ✅ `ShutdownEvent`（D37） | — |
 | 8.8 | tick レート・追いつきの上限の設定 | ✅ `Server::tick_rate`・`max_catch_up`（D37） | — |
 | 8.9 | ThreadDispatcher（Instance 内の並列 tick） | ⬜ | 別枠（D6、region 分割） |
 | 8.10 | ThreadProvider | ⬜ | 別枠（D6、同上） |
@@ -290,7 +290,7 @@
 | 10.3 | Snapshot（不変の状態の写し） | ⬜ | REQ-OPS-002（v0.8） |
 | 10.4 | tick の監視イベント | 🔶 `TickStats` を取れるのみ | REQ-OPS-001（v0.8） |
 | 10.5 | 例外ハンドラ | ⬜ ハンドラの panic で Instance のスレッドが止まる | REQ-OPS-003（v0.3） |
-| 10.6 | シャットダウン（シグナルで止める） | 🔶 `RunningServer::stop` のみ | M2-28 |
+| 10.6 | シャットダウン（シグナルで止める） | ✅ `Server::run` が Ctrl-C で `shutdown`（D37） | — |
 | 10.7 | 設定項目（約 60） | 🔶 motd・brand・REQ-NET-006 の 7 項目 | 項目ごとの REQ（proxy 系は M2-08〜10 が同じ入り口に足す） |
 | 10.8 | Mojang プロフィールの取得・署名の検証 | ⬜ | REQ-PLAYER-003（v0.3） |
 | 10.9 | プロセスの作り直し | 不要 | `Server` を作り直せば足りる（グローバルな状態を持たない、D6） |

@@ -47,6 +47,9 @@ const COMPRESSION_THRESHOLD: usize = 256;
 /// of the server.
 const TICKS_PER_SECOND: u32 = 20;
 
+/// How long [`RunningServer::shutdown`] waits, unless [`Server::shutdown_timeout`] says otherwise.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// What a server is called and where it listens. Start it with [`run`](Self::run) or
 /// [`start`](Self::start).
 #[derive(Debug, Clone)]
@@ -61,6 +64,8 @@ pub struct Server {
     tick_rate: u32,
     max_catch_up: Duration,
     nodelay: bool,
+    handle_ctrl_c: bool,
+    shutdown_timeout: Duration,
 }
 
 impl Server {
@@ -78,6 +83,8 @@ impl Server {
             tick_rate: TICKS_PER_SECOND,
             max_catch_up: MAX_BEHIND,
             nodelay: false,
+            handle_ctrl_c: true,
+            shutdown_timeout: SHUTDOWN_TIMEOUT,
         }
     }
 
@@ -146,6 +153,22 @@ impl Server {
         self
     }
 
+    /// Whether [`run`](Self::run) shuts the server down when it gets Ctrl-C. On by default; a second
+    /// Ctrl-C ends it without waiting for the first shutdown to finish. [`start`](Self::start)
+    /// never listens for it: whoever starts the server that way calls
+    /// [`RunningServer::shutdown`] themselves.
+    pub fn handle_ctrl_c(mut self, handle: bool) -> Self {
+        self.handle_ctrl_c = handle;
+        self
+    }
+
+    /// How long a shutdown waits for the instance to say goodbye and the players' connections to
+    /// write what they were sent, before it gives up and cuts them. The default is 10 seconds.
+    pub fn shutdown_timeout(mut self, timeout: Duration) -> Self {
+        self.shutdown_timeout = timeout;
+        self
+    }
+
     /// Checks the settings that cannot work, before anything starts.
     fn validate(&self) -> io::Result<()> {
         let invalid =
@@ -162,13 +185,31 @@ impl Server {
         Ok(())
     }
 
-    /// Starts the server and waits until it stops, which is only when listening fails.
+    /// Starts the server and waits until it stops: listening failed, or Ctrl-C asked for a
+    /// [`shutdown`](RunningServer::shutdown) (see [`handle_ctrl_c`](Self::handle_ctrl_c)).
     pub async fn run<I, F>(self, world: F) -> io::Result<()>
     where
         I: Instance + 'static,
         F: FnOnce(&Registries) -> I + Send + 'static,
     {
-        self.start(world).await?.wait().await
+        let ctrl_c = self.handle_ctrl_c;
+        let mut running = self.start(world).await?;
+        if !ctrl_c {
+            return running.wait().await;
+        }
+        tokio::select! {
+            result = running.join() => return result,
+            () = ctrl_c_signal() => {}
+        }
+        tracing::info!("Ctrl-C: shutting down, again to cut it short");
+        tokio::select! {
+            () = running.shutdown() => {}
+            () = ctrl_c_signal() => {
+                tracing::warn!("Ctrl-C again: not waiting");
+                running.instance.stop();
+            }
+        }
+        Ok(())
     }
 
     /// Starts listening and returns at once, with the server running in the background.
@@ -201,6 +242,7 @@ impl Server {
             )?
         };
         let slots = Arc::new(Slots::new(self.max_players));
+        let shutdown_timeout = self.shutdown_timeout;
         let options = Arc::new(self);
         let task = tokio::spawn(serve(
             listener,
@@ -254,6 +296,7 @@ impl Server {
             instance,
             task,
             slots,
+            shutdown_timeout,
         })
     }
 }
@@ -265,6 +308,7 @@ pub struct RunningServer {
     instance: InstanceHandle,
     task: JoinHandle<io::Result<()>>,
     slots: Arc<Slots>,
+    shutdown_timeout: Duration,
 }
 
 impl RunningServer {
@@ -289,19 +333,61 @@ impl RunningServer {
         self.instance.tick_stats()
     }
 
-    /// Stops listening and stops the instance, which ends every connection.
+    /// Stops listening and asks the instance to shut down, which ends every connection. Returns
+    /// at once; [`shutdown`](Self::shutdown) also waits for it to be done.
+    ///
+    /// The instance runs [`Instance::shutdown`] first: for a [`World`](crate::world::World)
+    /// that is a [`ShutdownEvent`](crate::world::ShutdownEvent), then everyone is told why they
+    /// are disconnected. To end it without that, use [`InstanceHandle::stop`] on
+    /// [`instance`](Self::instance).
     pub fn stop(&self) {
         self.task.abort();
-        self.instance.stop();
+        self.instance.shutdown();
+    }
+
+    /// [`stop`](Self::stop), then waits until the instance is done and every connection has
+    /// written what it was sent, for up to [`Server::shutdown_timeout`]. Past that the instance
+    /// is stopped without waiting for its handlers.
+    pub async fn shutdown(&self) {
+        self.stop();
+        let done = async {
+            self.instance.stopped().await;
+            while self.slots.online() > 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        if tokio::time::timeout(self.shutdown_timeout, done)
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                timeout = ?self.shutdown_timeout,
+                "shutdown took too long, cutting what is left"
+            );
+            self.instance.stop();
+        }
     }
 
     /// Waits until the server stops: [`stop`](Self::stop) was called, or listening failed.
-    pub async fn wait(self) -> io::Result<()> {
-        match self.task.await {
+    pub async fn wait(mut self) -> io::Result<()> {
+        self.join().await
+    }
+
+    async fn join(&mut self) -> io::Result<()> {
+        match (&mut self.task).await {
             Ok(result) => result,
             Err(e) if e.is_cancelled() => Ok(()),
             Err(e) => Err(io::Error::other(e)),
         }
+    }
+}
+
+/// Waits for Ctrl-C. If the signal cannot be listened for, never comes: the server then runs
+/// until it is stopped some other way.
+async fn ctrl_c_signal() {
+    if let Err(e) = tokio::signal::ctrl_c().await {
+        tracing::warn!(error = %e, "cannot listen for Ctrl-C");
+        std::future::pending::<()>().await;
     }
 }
 

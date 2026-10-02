@@ -25,7 +25,7 @@ use lodeframe::{
     text::{Color, Component},
     world::{
         BlockBreakEvent, BlockPlaceEvent, ChatEvent, Ctx, PlayerEvent, PlayerJoinEvent,
-        PlayerLeaveEvent, World,
+        PlayerLeaveEvent, ShutdownEvent, World,
     },
 };
 
@@ -2271,4 +2271,78 @@ fn a_handler_can_read_the_ping() {
     say(&mut env, &steve, "b");
 
     assert_eq!(*seen.borrow(), ["None", "Some(33ms)"]);
+}
+
+/// The payload of a play `Disconnect` that says `reason`.
+fn disconnect_payload(reason: Component) -> Vec<u8> {
+    let mut buf = Vec::new();
+    lodeframe::protocol::packets::play::Disconnect { reason }
+        .encode(&mut buf)
+        .unwrap();
+    buf
+}
+
+#[test]
+fn a_shutdown_tells_everyone_why_and_disconnects_them() {
+    let (mut env, mut steve, mut alex) = two_players();
+
+    env.shutdown();
+
+    for player in [&mut steve, &mut alex] {
+        let told = player.drain();
+        let disconnect = told
+            .iter()
+            .find(|r| r.id == out::DISCONNECT)
+            .expect("a disconnect");
+        assert_eq!(
+            disconnect.payload(),
+            disconnect_payload(Component::text("Server closed"))
+        );
+        assert!(player.is_disconnected());
+    }
+}
+
+#[test]
+fn the_shutdown_handlers_see_everyone_and_choose_the_reason() {
+    let (mut env, mut steve, alex) = two_players();
+    let seen = log();
+    let l = seen.clone();
+    let uuids = [steve.uuid(), alex.uuid()];
+    let leaves = Recorder::<PlayerLeaveEvent>::attach(env.instance_mut().events_mut());
+    env.instance_mut()
+        .events_mut()
+        .on(move |e: &mut ShutdownEvent, ctx: &mut Ctx| {
+            let online = uuids.iter().filter_map(|u| ctx.player_id(*u)).count();
+            note(&l, format!("online {online}"));
+            e.reason = Component::text("Back soon");
+        });
+
+    env.shutdown();
+
+    // the handler ran while both were still here, and the leaves came after it
+    assert_eq!(*seen.borrow(), ["online 2"]);
+    assert_eq!(leaves.take().len(), 2);
+    let told = steve.drain();
+    let disconnect = told.iter().find(|r| r.id == out::DISCONNECT).unwrap();
+    assert_eq!(
+        disconnect.payload(),
+        disconnect_payload(Component::text("Back soon"))
+    );
+}
+
+#[test]
+fn a_message_sent_while_shutting_down_arrives_before_the_disconnect() {
+    let mut env = env();
+    let mut steve = env.connect("Steve");
+    steve.drain();
+    env.instance_mut()
+        .events_mut()
+        .on(|_: &mut ShutdownEvent, ctx: &mut Ctx| {
+            ctx.broadcast(&Component::text("saving"));
+        });
+
+    env.shutdown();
+
+    let told = steve.drain();
+    assert!(position(&told, out::SYSTEM_CHAT) < position(&told, out::DISCONNECT));
 }

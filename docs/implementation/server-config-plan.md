@@ -1,6 +1,6 @@
 # サーバーの設定と停止 実装計画（M2-06・M2-28）
 
-> **Status**: M2-06 実装済み・M2-28 未着手 — 2026-10-02
+> **Status**: M2-06・M2-28 実装済み — 2026-10-02
 
 要件: REQ-NET-006、REQ-NET-002（在線人数）。決定: D6・D16・D21・D34（[decisions.md](../decisions.md)）。
 本体の単一 crate 内の変更（`server.rs`・`play.rs`・`instance.rs`・`world.rs`・`status.rs`）。設計ゲートの対象外だが、M2-07〜10（proxy 系）が設定を足す入り口になるので、形を先に決める。
@@ -59,6 +59,14 @@ M2-07・09・10 が待つのは設定の入り口だけなので、依存は M2-
 - 止め方: ① 新しい接続を受けない ② Instance に停止を送る ③ Instance が `ShutdownEvent` を発行し、ハンドラが終わるのを待つ ④ 全員に理由つきで切断（play 段階の Disconnect）⑤ スレッドを止める。Ctrl-C を 2 回目に受けたら待たずに終える
 - **`ShutdownEvent { reason: Component }`**: 既存のイベントノードに載る。ハンドラは `Ctx` でデータ・プレイヤーに触れる（保存など）。`reason` を書き換えると切断理由が変わる。既定は「Server closed」。`env.emit` でハーネスから検証できる
 - 停止の上限時間（ハンドラが終わらないとき）は `shutdown_timeout(Duration)`（既定 10 秒）。ハンドラは同期 `fn` なので、超えるのは `ctx.spawn` の待ちを含む場合に限る
+
+### 実装での形
+
+- `Instance::shutdown(&mut self)`（既定は何もしない）を足した。`Message` の変種にしなかったのは、自作 Instance の `match` を壊さず、停止が tick の途中に割り込まないため。`InstanceHandle::shutdown()` が旗を立て、`Runner::run` が次の tick の前に `Instance::shutdown` を呼んで抜ける。`InstanceHandle::stopped()` で終わりを待てる。`InstanceHandle::stop()` は従来どおり挨拶なしで止める
+- `World::shutdown`: `ShutdownEvent` を発火 → ハンドラの要求を処理 → 全員を `reason` で切断（各自の `PlayerLeaveEvent` が続く）
+- `RunningServer::stop` は待たずに「受付を止めて shutdown を頼む」まで。`RunningServer::shutdown().await` は加えて、Instance の終了と全接続の書き出し（`online() == 0`）を `shutdown_timeout` まで待ち、超えたら `InstanceHandle::stop` で切る
+- `Server::run` は Ctrl-C で `shutdown` に入り、2 回目の Ctrl-C は待たずに返る。シグナル待ちのために tokio の `signal` feature を足した（新しい crate は `signal-hook-registry` と `errno`）
+- 切断理由は play 段階の `Disconnect`。ハーネスは `env.shutdown()`
 
 ## 確認して決めたこと（2026-10-02）
 
