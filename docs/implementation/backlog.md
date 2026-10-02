@@ -87,7 +87,7 @@
 | ✅ | M2-03 | `ctx.spawn` | M2-01 | #35 |
 | ⬜ | M2-04 | ログイン前の async イベント | M2-06 | — |
 | ✅ | M2-05 | スケジューラ（Cooldown は M2-19 の後） | M2-01, M2-03 | #36 |
-| 🟡 | M2-06 | サーバーの設定と停止 | — | — |
+| 🟡 | M2-06 | サーバーの設定・在線人数・keep alive と遅延（[計画](server-config-plan.md)） | — | — |
 | ⬜ | M2-07 | plugin message | M2-06 | — |
 | ⬜ | M2-08 | Velocity modern forwarding | M2-07 | — |
 | ⬜ | M2-09 | BungeeCord / BungeeGuard | M2-06, M2-08（同じ設定の入り口） | — |
@@ -109,4 +109,5 @@
 | ⬜ | M2-25 | `derive(Event)` | M2-02 | — |
 | ⬜ | M2-26 | examples のミニゲームと API の評価 | M2-05, M2-08, M2-12, M2-14, M2-15, M2-21, M2-24 | — |
 | ✅ | M2-27 | Cooldown（REQ-API-006 の残り） | M2-05, M2-19 | #38 |
+| 🟡 | M2-28 | サーバーの停止（Ctrl-C・`ShutdownEvent`。M2-06 から分けた） | — | — |
 
