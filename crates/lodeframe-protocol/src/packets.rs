@@ -121,6 +121,15 @@ pub mod login {
 pub mod configuration {
     use crate::{Decode, Encode, Identifier, Nbt, Packet, VarInt};
 
+    /// Ends the connection during configuration, showing the player `reason`.
+    #[derive(Debug, Clone, PartialEq, Encode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::configuration::clientbound::DISCONNECT, state = Configuration, side = Clientbound)]
+    pub struct Disconnect {
+        /// What the player is told.
+        pub reason: lodeframe_text::Component,
+    }
+
     /// A data pack both sides claim to have, so its data need not be sent.
     #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
     #[lodeframe(crate = crate)]
@@ -913,6 +922,8 @@ pub mod play {
 #[cfg(test)]
 mod tests {
     use super::{configuration::*, login::*, play::*};
+    // both the play and the configuration packet are called this
+    use super::play::Disconnect;
     use lodeframe_text::Component;
 
     use crate::{Decode, Encode, Identifier, Nbt, Uuid, VarInt};
@@ -1275,5 +1286,22 @@ mod tests {
         .encode(&mut buf)
         .unwrap();
         assert_eq!(buf, [8, 0, 2, b'h', b'i']);
+    }
+
+    #[test]
+    fn the_configuration_disconnect_is_the_same_component() {
+        let mut play = Vec::new();
+        let mut configuration = Vec::new();
+        Disconnect {
+            reason: Component::text("hi"),
+        }
+        .encode(&mut play)
+        .unwrap();
+        super::configuration::Disconnect {
+            reason: Component::text("hi"),
+        }
+        .encode(&mut configuration)
+        .unwrap();
+        assert_eq!(play, configuration);
     }
 }

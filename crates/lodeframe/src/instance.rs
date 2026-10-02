@@ -23,6 +23,25 @@ use crate::{clock::Clock, login::Profile, protocol::Uuid};
 pub const TICK: Duration = Duration::from_millis(50);
 /// Past this much lag the loop stops catching up and starts over from now.
 pub const MAX_BEHIND: Duration = Duration::from_secs(2);
+/// How fast an instance ticks and how far behind it may fall before it stops catching up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pacing {
+    /// Time between ticks.
+    pub tick: Duration,
+    /// Past this much lag the loop starts over from now.
+    pub max_behind: Duration,
+}
+
+impl Default for Pacing {
+    /// 20 ticks per second, giving up catching up at [`MAX_BEHIND`].
+    fn default() -> Self {
+        Self {
+            tick: TICK,
+            max_behind: MAX_BEHIND,
+        }
+    }
+}
+
 /// Messages waiting for an instance before senders have to wait.
 const INBOX: usize = 4096;
 /// Messages of [`Packets`] waiting for one client before it is cut off.
@@ -61,6 +80,13 @@ pub enum Message {
         player: Uuid,
         /// Packet id followed by the payload.
         body: Vec<u8>,
+    },
+    /// A keep alive of the player was answered: the round trip it took.
+    Latency {
+        /// Whose connection it was.
+        player: Uuid,
+        /// From sending the keep alive to getting the answer.
+        rtt: Duration,
     },
     /// A connection of the player ended.
     Leave {
@@ -139,6 +165,7 @@ pub struct Runner<I> {
     instance: I,
     inbox: mpsc::Receiver<Message>,
     metrics: Arc<TickMetrics>,
+    pacing: Pacing,
 }
 
 impl<I: Instance> Runner<I> {
@@ -156,9 +183,16 @@ impl<I: Instance> Runner<I> {
                 instance,
                 inbox,
                 metrics,
+                pacing: Pacing::default(),
             },
             handle,
         )
+    }
+
+    /// Ticks at `pacing` in [`run`](Self::run) instead of 20 per second.
+    pub fn paced(mut self, pacing: Pacing) -> Self {
+        self.pacing = pacing;
+        self
     }
 
     /// One step: hands every waiting message to the instance, then ticks it.
@@ -184,10 +218,10 @@ impl<I: Instance> Runner<I> {
         self.metrics.busy_max_ns.fetch_max(ns, Ordering::Relaxed);
     }
 
-    /// Ticks every [`TICK`] until `stop` is set or all handles are gone.
+    /// Ticks every [`Pacing::tick`] (by default [`TICK`]) until `stop` is set or all handles are gone.
     ///
     /// A tick that runs late is followed by ticks back to back until the loop has caught up.
-    /// Past [`MAX_BEHIND`] it gives up catching up and starts over from now.
+    /// Past [`Pacing::max_behind`] (by default [`MAX_BEHIND`]) it gives up catching up and starts over from now.
     pub fn run(&mut self, clock: &impl Clock, stop: &AtomicBool) {
         let mut next = clock.now();
         let mut reported = false;
@@ -198,7 +232,7 @@ impl<I: Instance> Runner<I> {
                 continue;
             }
             let behind = now - next;
-            if behind > MAX_BEHIND {
+            if behind > self.pacing.max_behind {
                 tracing::warn!(
                     behind_ms = behind.as_millis() as u64,
                     "can't keep up, skipping ticks"
@@ -207,7 +241,7 @@ impl<I: Instance> Runner<I> {
                 reported = true;
                 self.metrics.skipped.fetch_add(1, Ordering::Relaxed);
                 self.metrics.late.fetch_add(1, Ordering::Relaxed);
-            } else if behind >= TICK {
+            } else if behind >= self.pacing.tick {
                 self.metrics.late.fetch_add(1, Ordering::Relaxed);
                 // one warning per stretch of lag; the rest of the stretch is debug
                 if reported {
@@ -227,7 +261,7 @@ impl<I: Instance> Runner<I> {
                 break;
             }
             self.record(clock.now().saturating_duration_since(started));
-            next += TICK;
+            next += self.pacing.tick;
         }
     }
 }
@@ -342,6 +376,22 @@ where
     F: FnOnce() -> I + Send + 'static,
     C: Clock + Send + 'static,
 {
+    spawn_paced(name, clock, runtime, Pacing::default(), factory)
+}
+
+/// Like [`spawn`], ticking at `pacing`.
+pub fn spawn_paced<I, F, C>(
+    name: &str,
+    clock: C,
+    runtime: tokio::runtime::Handle,
+    pacing: Pacing,
+    factory: F,
+) -> std::io::Result<InstanceHandle>
+where
+    I: Instance + 'static,
+    F: FnOnce() -> I + Send + 'static,
+    C: Clock + Send + 'static,
+{
     // Runner::new needs the instance, which only exists on the new thread; the handle is
     // sent back so the caller gets it before the first tick.
     let (tx, rx) = std::sync::mpsc::channel();
@@ -351,7 +401,8 @@ where
         .spawn(move || {
             let mut instance = factory();
             instance.attach(runtime);
-            let (mut runner, handle) = Runner::new(instance);
+            let (runner, handle) = Runner::new(instance);
+            let mut runner = runner.paced(pacing);
             let stop = handle.stop.clone();
             if tx.send(handle).is_err() {
                 return;

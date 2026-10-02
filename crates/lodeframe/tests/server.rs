@@ -35,10 +35,9 @@ async fn start(motd: &str) -> RunningServer {
         .unwrap()
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn the_server_list_shows_the_motd() {
-    let server = start("a test server").await;
-    let mut stream = TcpStream::connect(server.addr()).await.unwrap();
+/// Asks the server list of the server at `addr`, returning the JSON it answers with.
+async fn server_list(addr: std::net::SocketAddr) -> String {
+    let mut stream = TcpStream::connect(addr).await.unwrap();
 
     for body in [
         packet_body(&Intention {
@@ -66,9 +65,112 @@ async fn the_server_list_shows_the_motd() {
     };
     let (id, mut payload) = split_packet_id(&body).unwrap();
     assert_eq!(id, <StatusResponse as lodeframe::protocol::Packet>::ID);
-    let response = <StatusResponse as lodeframe::protocol::Decode>::decode(&mut payload).unwrap();
-    assert!(response.json.contains("a test server"), "{}", response.json);
+    <StatusResponse as lodeframe::protocol::Decode>::decode(&mut payload)
+        .unwrap()
+        .json
+}
 
+#[tokio::test(flavor = "multi_thread")]
+async fn the_server_list_shows_the_motd() {
+    let server = start("a test server").await;
+
+    let json = server_list(server.addr()).await;
+
+    assert!(json.contains("a test server"), "{json}");
+    server.stop();
+}
+
+/// Starts a world server with `configure` applied.
+async fn start_with(configure: impl FnOnce(Server) -> Server) -> RunningServer {
+    configure(Server::new("127.0.0.1:0"))
+        .start(|registries: &Registries| {
+            let mut world = World::new(registries, FlatGenerator::default());
+            world.view_distance = 2;
+            world
+        })
+        .await
+        .unwrap()
+}
+
+/// Waits until `server` counts `n` players online.
+async fn wait_for_online(server: &RunningServer, n: u32) {
+    for _ in 0..200 {
+        if server.online() == n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("{} players online, not {n}", server.online());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_server_list_shows_who_is_online_and_the_most_there_can_be() {
+    let server = start_with(|s| s.max_players(7)).await;
+    assert!(
+        server_list(server.addr())
+            .await
+            .contains(r#""players":{"max":7,"online":0}"#)
+    );
+
+    let _bot = Bot::connect(server.addr(), "Steve").await.unwrap();
+
+    let json = server_list(server.addr()).await;
+    assert!(json.contains(r#""players":{"max":7,"online":1}"#), "{json}");
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_full_server_turns_the_next_player_away_until_someone_leaves() {
+    let server = start_with(|s| s.max_players(1)).await;
+    let first = Bot::connect(server.addr(), "Steve").await.unwrap();
+
+    let refused = Bot::connect(server.addr(), "Alex").await;
+
+    assert!(refused.is_err());
+    assert_eq!(server.online(), 1);
+    drop(first);
+    wait_for_online(&server, 0).await;
+    Bot::connect(server.addr(), "Alex").await.unwrap();
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_that_cannot_work_stop_the_server_from_starting() {
+    let started = Server::new("127.0.0.1:0")
+        .tick_rate(0)
+        .start(|registries: &Registries| World::new(registries, FlatGenerator::default()))
+        .await;
+
+    assert_eq!(
+        started.unwrap_err().kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_tick_rate_and_the_compression_threshold_can_be_set() {
+    let server = start_with(|s| s.tick_rate(40).compression_threshold(32).nodelay(true)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let before = server.tick_stats();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let ticks = server.tick_stats().ticks - before.ticks;
+
+    // 40 a second: about 20 in half a second, with slack for a busy machine
+    assert!((12..=28).contains(&ticks), "{ticks} ticks in 500 ms");
+    // a player can still join with the other settings
+    Bot::connect(server.addr(), "Steve").await.unwrap();
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_player_who_never_answers_keep_alives_is_cut_off() {
+    let server =
+        start_with(|s| s.keep_alive(Duration::from_millis(50), Duration::from_millis(300))).await;
+    // the bot answers keep alives only while it is reading, and here it does not read
+    let _silent = Bot::connect(server.addr(), "Steve").await.unwrap();
+    wait_for_online(&server, 1).await;
+
+    wait_for_online(&server, 0).await;
     server.stop();
 }
 

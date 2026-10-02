@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //! A playable world: puts players into it, follows their movement and keeps their chunks.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    time::Duration,
+};
 
 use crate::{
     chunk::{Chunk, ChunkLoader, ChunkPos, ChunkTracker, Chunks, HEIGHT, MIN_Y},
@@ -288,6 +291,8 @@ struct Player {
     // whether this player is in `World::movers` waiting for the next tick to be sent
     moved: bool,
     data: Data,
+    // the round trip of the last keep alive, none until the first is answered
+    latency: Option<Duration>,
 }
 
 impl Player {
@@ -592,6 +597,12 @@ impl Ctx {
         &mut self.data
     }
 
+    /// How long a keep alive took to be answered, the last time one was: the player's ping. `None`
+    /// if they are gone or have not answered one yet, which is the first 15 seconds by default.
+    pub fn ping(&self, player: PlayerId) -> Option<Duration> {
+        self.resolve(player).and_then(|p| p.latency)
+    }
+
     /// The player's name, or `None` if they are gone.
     pub fn name(&self, player: PlayerId) -> Option<&str> {
         self.resolve(player).map(|p| p.name.as_str())
@@ -697,6 +708,7 @@ impl Ctx {
             known_pitch: 0,
             moved: false,
             data: Data::default(),
+            latency: None,
         };
         if self.send_join(id, &player, entity_id).is_err() {
             self.sessions.leave(id);
@@ -1452,6 +1464,11 @@ impl Instance for World {
         match message {
             Message::Join { profile, outbound } => self.join(profile, outbound),
             Message::Packet { player, body } => self.packet(player, &body),
+            Message::Latency { player, rtt } => {
+                if let Some(p) = self.ctx.players.get_mut(&player) {
+                    p.latency = Some(rtt);
+                }
+            }
             Message::Leave { player, outbound } => {
                 // a connection that was replaced by a newer one of the same player does not
                 // take the newer one with it

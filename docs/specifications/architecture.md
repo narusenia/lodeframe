@@ -50,6 +50,8 @@ lodeframe/
 - `ctx.after(delay).run(task)`: タスクは tick 数で数え、`World::tick` の順に「spawn 結果 → 開始時のタスク → tick 本体 → 終了時（`at_end`）のタスク → 遅延キュー」で走る。戻り値の `Next` で次回を決める。持ち主は全体とプレイヤー（`for_player`）で、プレイヤーの退出で止まる。同じ時点では走る tick・登録順（D34）。
 - `Cooldown` は終わる tick だけを持つ値で、`Data` の key に入れる。現在の tick は `ctx.now()`、長さは `try_use(now, delay)` で渡す（D36）。
 - 利用者データ: `Data`（型付きの値の表）を `Player` と `Ctx` が持つ。`Key<T>`（名前つき）か型そのものを key に引き、型が合わなければ `None`。プレイヤーのデータは退出で消え、その人の `PlayerLeaveEvent` を処理している間だけ `ctx.leaving_data(id)` で読める（D35）。
+- 在線人数と最大人数は、`Server` が持つ `AtomicU32` の数だけを conn task が数える（ログイン直後に compare-exchange、接続の終わりで戻す）。サーバー一覧は Instance を待たずにこれで答える。Instance の状態は共有しない（D37）。
+- keep alive は conn task が id と時刻を持ち、応答の id を照らす。間違い・頼まれていない応答・応答の無いまま `timeout` は理由つきで切る。計測した往復は `Message::Latency` で Instance に渡り、`ctx.ping` で読める（D37）。
 - グローバル可変シングルトンは置かない。サーバー全体の共有物（レジストリ等）は起動時に確定し不変で共有する。
 
 ## テストハーネス（D21）

@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Configuration: agree on data packs, send the registries, hand over to Play.
 
-use tokio::io::{AsyncRead, AsyncWrite};
+use std::{io, time::Duration};
+
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    time::timeout,
+};
 
 use crate::{
     net::Connection,
@@ -28,6 +33,20 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
     registries: &Registries,
     brand: &str,
 ) -> Result<()> {
+    run_with(conn, registries, brand, KNOWN_PACKS_TIMEOUT).await
+}
+
+/// How long [`run`] waits for the client's answer to the known packs.
+pub const KNOWN_PACKS_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Like [`run`], waiting `known_packs_timeout` for the client's answer to the known packs
+/// (the connection's read timeout applies to every other packet).
+pub async fn run_with<S: AsyncRead + AsyncWrite + Unpin>(
+    conn: &mut Connection<S>,
+    registries: &Registries,
+    brand: &str,
+    known_packs_timeout: Duration,
+) -> Result<()> {
     if conn.state() != State::Configuration {
         return Err(Error::InvalidValue("not in the configuration state"));
     }
@@ -47,7 +66,9 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
     })
     .await?;
 
-    let packs: ServerboundKnownPacks = read_until(conn).await?;
+    let packs: ServerboundKnownPacks = timeout(known_packs_timeout, read_until(conn))
+        .await
+        .map_err(|_| Error::from(io::Error::from(io::ErrorKind::TimedOut)))??;
     if !packs.packs.contains(&core) {
         return Err(Error::InvalidValue("client lacks the minecraft:core pack"));
     }
