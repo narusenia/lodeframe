@@ -131,6 +131,13 @@ impl<I: Instance> TestEnv<I> {
         });
     }
 
+    /// Shuts the instance down, as a stopping server does: for a
+    /// [`World`](crate::world::World), a [`ShutdownEvent`](crate::world::ShutdownEvent) and then
+    /// everyone is disconnected. The instance has done it when this returns.
+    pub fn shutdown(&mut self) {
+        self.instance.shutdown();
+    }
+
     /// Joins a player called `name`. The instance has handled the join when this returns.
     pub fn connect(&mut self, name: &str) -> FakePlayer {
         let uuid = Uuid::offline(name);

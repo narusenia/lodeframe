@@ -52,6 +52,7 @@ lodeframe/
 - 利用者データ: `Data`（型付きの値の表）を `Player` と `Ctx` が持つ。`Key<T>`（名前つき）か型そのものを key に引き、型が合わなければ `None`。プレイヤーのデータは退出で消え、その人の `PlayerLeaveEvent` を処理している間だけ `ctx.leaving_data(id)` で読める（D35）。
 - 在線人数と最大人数は、`Server` が持つ `AtomicU32` の数だけを conn task が数える（ログイン直後に compare-exchange、接続の終わりで戻す）。サーバー一覧は Instance を待たずにこれで答える。Instance の状態は共有しない（D37）。
 - keep alive は conn task が id と時刻を持ち、応答の id を照らす。間違い・頼まれていない応答・応答の無いまま `timeout` は理由つきで切る。計測した往復は `Message::Latency` で Instance に渡り、`ctx.ping` で読める（D37）。
+- 停止: `RunningServer::shutdown` が受付を止め、Instance に `Instance::shutdown` を頼む。`World` は `ShutdownEvent` を発火してから全員に理由つきの Disconnect を送り、退出させる。接続が書き終えるまで `shutdown_timeout` まで待つ。`Server::run` は Ctrl-C でこれを呼ぶ（D37）。
 - グローバル可変シングルトンは置かない。サーバー全体の共有物（レジストリ等）は起動時に確定し不変で共有する。
 
 ## テストハーネス（D21）
