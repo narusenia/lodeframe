@@ -146,14 +146,28 @@ impl<I: Instance> TestEnv<I> {
     /// Like [`connect`](Self::connect), with the plugin messages that the client sent while it
     /// joined, such as its brand (`minecraft:brand`, a string).
     pub fn connect_with(&mut self, name: &str, plugin_messages: Vec<PluginMessage>) -> FakePlayer {
-        let uuid = Uuid::offline(name);
+        let profile = Profile {
+            uuid: Uuid::offline(name),
+            name: name.into(),
+            properties: Vec::new(),
+            remote_addr: None,
+        };
+        self.connect_as(profile, plugin_messages)
+    }
+
+    /// Like [`connect_with`](Self::connect_with), for a player a proxy forwarded: the profile
+    /// carries the UUID, the skin and the address the way [`login::velocity`](crate::login::velocity)
+    /// reads them.
+    pub fn connect_as(
+        &mut self,
+        profile: Profile,
+        plugin_messages: Vec<PluginMessage>,
+    ) -> FakePlayer {
+        let uuid = profile.uuid;
         let (outbound, inbox) = mpsc::channel(OUTBOX);
         let connection = outbound.downgrade();
         self.instance.handle(Message::Join {
-            profile: Profile {
-                uuid,
-                name: name.into(),
-            },
+            profile,
             outbound,
             plugin_messages,
         });

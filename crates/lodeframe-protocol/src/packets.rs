@@ -207,6 +207,16 @@ pub mod login {
         pub uuid: Uuid,
     }
 
+    /// Ends the connection during login. Unlike the later states, the reason is a JSON text
+    /// component in a string.
+    #[derive(Debug, Clone, PartialEq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::login::clientbound::LOGIN_DISCONNECT, state = Login, side = Clientbound)]
+    pub struct Disconnect {
+        /// What the player is told, as JSON such as `{"text":"..."}`.
+        pub reason: String,
+    }
+
     /// Turns compression on for every packet after this one.
     #[derive(Debug, Clone, PartialEq, Encode, Decode, Packet)]
     #[lodeframe(crate = crate)]
@@ -217,7 +227,7 @@ pub mod login {
     }
 
     /// A profile property, such as the skin textures.
-    #[derive(Debug, Clone, PartialEq, Encode, Decode)]
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
     #[lodeframe(crate = crate)]
     pub struct ProfileProperty {
         /// Property name.

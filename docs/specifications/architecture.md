@@ -45,7 +45,7 @@ lodeframe/
 ```
 
 - conn task は状態機械（Handshake → Status / Login → Configuration → Play）を持ち、Play 以降のパケットだけを Instance に渡す。
-- ログイン前の async イベント（forwarding 検証、利用者の BAN 照会等）は conn task 側で await する。Instance には確定したプレイヤーだけが入る。
+- ログイン前の async イベント（forwarding 検証、利用者の BAN 照会等）は conn task 側で await する。Instance には確定したプレイヤーだけが入る。Velocity の転送は `login::velocity` がここで検証し、確定した UUID・名前・スキン・接続元を `Profile` として Instance に渡す（[計画](../implementation/velocity-forwarding-plan.md)、D39）。
 - `ctx.spawn(fut).then(cb)`: fut は tokio で実行（`Instance::attach` で受け取った Handle）、結果は `Ctx` の channel に戻り、次 tick 冒頭で cb が `&mut Ctx` 付きで走る。`then_for(player, cb)` は退出済みなら呼ばない。cb は `Send` 不要で Instance のスレッドに残る（D33）。
 - `ctx.after(delay).run(task)`: タスクは tick 数で数え、`World::tick` の順に「spawn 結果 → 開始時のタスク → tick 本体 → 終了時（`at_end`）のタスク → 遅延キュー」で走る。戻り値の `Next` で次回を決める。持ち主は全体とプレイヤー（`for_player`）で、プレイヤーの退出で止まる。同じ時点では走る tick・登録順（D34）。
 - `Cooldown` は終わる tick だけを持つ値で、`Data` の key に入れる。現在の tick は `ctx.now()`、長さは `try_use(now, delay)` で渡す（D36）。

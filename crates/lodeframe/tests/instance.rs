@@ -415,6 +415,8 @@ async fn play_relays_packets_both_ways_and_keeps_keepalives_to_itself() {
     let profile = Profile {
         uuid: Uuid(7),
         name: "Steve".into(),
+        properties: Vec::new(),
+        remote_addr: None,
     };
     let task = tokio::spawn(play::run_with(
         server,
@@ -530,6 +532,8 @@ fn probed_connection() -> Probed {
     let profile = Profile {
         uuid: Uuid(7),
         name: "Steve".into(),
+        properties: Vec::new(),
+        remote_addr: None,
     };
     let task = tokio::spawn(play::run_with(
         server,

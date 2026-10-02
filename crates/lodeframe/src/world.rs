@@ -3,6 +3,7 @@
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    net::IpAddr,
     time::Duration,
 };
 
@@ -21,6 +22,7 @@ use crate::{
         packets::{
             MAX_CLIENTBOUND_PAYLOAD,
             configuration::BRAND_CHANNEL,
+            login::ProfileProperty,
             play::{
                 ACTION_START_DESTROY_BLOCK, AddEntity, BlockChangedAck, BlockUpdate, Chat,
                 ChunkBatchFinished, ChunkBatchStart, ClientboundCustomPayload, Disconnect,
@@ -341,6 +343,10 @@ struct Player {
     latency: Option<Duration>,
     // what the client reported on `minecraft:brand` while it joined
     client_brand: Option<String>,
+    // the skin and the like the proxy forwarded, or empty
+    properties: Vec<ProfileProperty>,
+    // the address the proxy said the client connected from
+    remote_addr: Option<IpAddr>,
 }
 
 impl Player {
@@ -348,7 +354,7 @@ impl Player {
         PlayerInfo {
             uuid,
             name: self.name.clone(),
-            properties: Vec::new(),
+            properties: self.properties.clone(),
             // creative, as in `send_join`
             game_mode: VarInt(1),
             listed: true,
@@ -657,6 +663,19 @@ impl Ctx {
         self.resolve(player).and_then(|p| p.client_brand.as_deref())
     }
 
+    /// The address a proxy said the player connected from, or `None` if they are gone or came
+    /// without [`Forwarding`](crate::server::Forwarding).
+    pub fn remote_addr(&self, player: PlayerId) -> Option<IpAddr> {
+        self.resolve(player).and_then(|p| p.remote_addr)
+    }
+
+    /// The profile properties (the skin textures) a proxy forwarded, empty if they are gone or
+    /// came without [`Forwarding`](crate::server::Forwarding).
+    pub fn profile_properties(&self, player: PlayerId) -> &[ProfileProperty] {
+        self.resolve(player)
+            .map_or(&[], |p| p.properties.as_slice())
+    }
+
     /// Sends `data` to one player on `channel`. Does nothing if they are gone. Data of more than
     /// [`MAX_CLIENTBOUND_PAYLOAD`] bytes is not sent.
     pub fn send_plugin_message(&mut self, player: PlayerId, channel: &Identifier, data: &[u8]) {
@@ -793,6 +812,8 @@ impl Ctx {
                 .iter()
                 .find(|m| m.channel.as_str() == BRAND_CHANNEL)
                 .and_then(|m| String::decode(&mut m.data.as_slice()).ok()),
+            properties: profile.properties,
+            remote_addr: profile.remote_addr,
         };
         if self.send_join(id, &player, entity_id).is_err() {
             self.sessions.leave(id);

@@ -1,6 +1,6 @@
 # Velocity modern forwarding 実装計画（M2-08）
 
-> **Status**: 計画 — 2026-10-03
+> **Status**: 実装済み — 2026-10-03
 
 要件: REQ-AUTH-001。決定: D6・D21・D37・D38・D39（[decisions.md](../decisions.md)）。
 `lodeframe`（本体）と `lodeframe-bot` にまたがり、`Profile`（公開型）が変わるので、コードの前にここで形を決める。M2-09（BungeeCord）・M2-10（HAProxy）が同じ設定の入り口に足す。
