@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::{
     chunk::{Chunk, ChunkLoader, ChunkPos, ChunkTracker, Chunks, HEIGHT, MIN_Y},
-    event::{Event, EventNode},
+    event::{ChildId, Event, EventNode, Listener, ListenerId, Parents},
     instance::{Instance, Message, Packets, Sessions},
     login::Profile,
     protocol::{
@@ -37,6 +37,13 @@ const CHAT_TYPE: &str = "minecraft:chat";
 /// The longest line the chat box takes.
 const MAX_CHAT: usize = 256;
 
+/// What events about one player have in common. A listener for `dyn PlayerEvent` hears all of
+/// them; see [`Event::parents`].
+pub trait PlayerEvent {
+    /// The player it is about.
+    fn player(&self) -> PlayerId;
+}
+
 /// A player came into the world. The others have been told; the player is still getting their
 /// chunks, so a message sent from a handler arrives before the ground does.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,7 +54,17 @@ pub struct PlayerJoinEvent {
     pub name: String,
 }
 
-impl Event for PlayerJoinEvent {}
+impl PlayerEvent for PlayerJoinEvent {
+    fn player(&self) -> PlayerId {
+        self.player
+    }
+}
+
+impl Event for PlayerJoinEvent {
+    fn parents<C: 'static>(&mut self, parents: &mut Parents<'_, C>) {
+        parents.visit::<dyn PlayerEvent>(self);
+    }
+}
 
 /// A player left the world, or was dropped because their connection could not keep up. The
 /// others have been told, and [`player`](Self::player) is already gone: [`Ctx::name`] and the
@@ -63,7 +80,17 @@ pub struct PlayerLeaveEvent {
     pub name: String,
 }
 
-impl Event for PlayerLeaveEvent {}
+impl PlayerEvent for PlayerLeaveEvent {
+    fn player(&self) -> PlayerId {
+        self.player
+    }
+}
+
+impl Event for PlayerLeaveEvent {
+    fn parents<C: 'static>(&mut self, parents: &mut Parents<'_, C>) {
+        parents.visit::<dyn PlayerEvent>(self);
+    }
+}
 
 /// A player said something in the chat. Cancel it to keep it from the others, or replace
 /// [`message`](Self::message) to change what they see.
@@ -86,9 +113,19 @@ impl ChatEvent {
     }
 }
 
+impl PlayerEvent for ChatEvent {
+    fn player(&self) -> PlayerId {
+        self.player
+    }
+}
+
 impl Event for ChatEvent {
     fn is_cancelled(&self) -> bool {
         self.cancelled
+    }
+
+    fn parents<C: 'static>(&mut self, parents: &mut Parents<'_, C>) {
+        parents.visit::<dyn PlayerEvent>(self);
     }
 }
 
@@ -111,9 +148,19 @@ impl BlockBreakEvent {
     }
 }
 
+impl PlayerEvent for BlockBreakEvent {
+    fn player(&self) -> PlayerId {
+        self.player
+    }
+}
+
 impl Event for BlockBreakEvent {
     fn is_cancelled(&self) -> bool {
         self.cancelled
+    }
+
+    fn parents<C: 'static>(&mut self, parents: &mut Parents<'_, C>) {
+        parents.visit::<dyn PlayerEvent>(self);
     }
 }
 
@@ -139,9 +186,19 @@ impl BlockPlaceEvent {
     }
 }
 
+impl PlayerEvent for BlockPlaceEvent {
+    fn player(&self) -> PlayerId {
+        self.player
+    }
+}
+
 impl Event for BlockPlaceEvent {
     fn is_cancelled(&self) -> bool {
         self.cancelled
+    }
+
+    fn parents<C: 'static>(&mut self, parents: &mut Parents<'_, C>) {
+        parents.visit::<dyn PlayerEvent>(self);
     }
 }
 
@@ -343,6 +400,19 @@ impl Player {
     }
 }
 
+type TreeChange = Box<dyn FnOnce(&mut EventNode<Ctx>)>;
+
+/// What a handler asked of the world while the tree was in use.
+enum Deferred {
+    Emit(Box<dyn FnOnce(&mut World)>),
+    Tree(TreeChange),
+}
+
+/// The most deferred requests one call of [`Instance::handle`] or [`Instance::tick`] works
+/// through. A handler that emits the event it handles would otherwise never let the world go.
+/// Real chains are a few events long; this is far above that and far below a stall.
+const MAX_DEFERRED: usize = 1000;
+
 /// The state of a [`World`]: its chunks and its players. This is what handlers get to act on.
 ///
 /// Players are named by [`PlayerId`]. A handler can keep one and use it later; if the player is
@@ -378,6 +448,8 @@ pub struct Ctx {
     movers: Vec<Uuid>,
     // players who left since `World` last told the handlers
     departed: Vec<PlayerLeaveEvent>,
+    // what handlers asked to emit or change in the tree, for `World` to do once they are done
+    deferred: VecDeque<Deferred>,
 }
 
 impl Ctx {
@@ -404,7 +476,62 @@ impl Ctx {
             last_serial: 0,
             movers: Vec::new(),
             departed: Vec::new(),
+            deferred: VecDeque::new(),
         }
+    }
+
+    /// Emits `event` once the handler that is running is done, in the order requested and
+    /// within the same tick. The handler cannot see how it ended up (cancelled or not): the
+    /// tree is in use until then. Events that are about a default action should be emitted by
+    /// the code that does the action instead.
+    pub fn emit<E: Event>(&mut self, event: E) {
+        self.deferred
+            .push_back(Deferred::Emit(Box::new(move |world| {
+                let mut event = event;
+                world.emit(&mut event);
+            })));
+    }
+
+    /// Adds a listener to the root of the tree once the handler that is running is done, so it
+    /// takes effect from the next event on, not for the one being handled.
+    pub fn add_listener<E: ?Sized + 'static>(&mut self, listener: Listener<E, Ctx>) -> ListenerId {
+        let id = ListenerId::fresh();
+        self.deferred
+            .push_back(Deferred::Tree(Box::new(move |root| {
+                root.insert_listener(id, listener)
+            })));
+        id
+    }
+
+    /// Takes a listener off the tree once the handler that is running is done.
+    pub fn remove_listener(&mut self, id: ListenerId) {
+        self.deferred
+            .push_back(Deferred::Tree(Box::new(move |root| {
+                root.remove_listener(id);
+            })));
+    }
+
+    /// Attaches `node` to the root of the tree once the handler that is running is done.
+    pub fn add_node(&mut self, node: EventNode<Ctx>) -> ChildId {
+        self.add_node_at(node, 0)
+    }
+
+    /// Like [`add_node`](Self::add_node), with a priority among the children of the root.
+    pub fn add_node_at(&mut self, node: EventNode<Ctx>, priority: i32) -> ChildId {
+        let id = ChildId::fresh();
+        self.deferred
+            .push_back(Deferred::Tree(Box::new(move |root| {
+                root.insert_child(id, node, priority)
+            })));
+        id
+    }
+
+    /// Detaches a child of the root once the handler that is running is done.
+    pub fn remove_node(&mut self, id: ChildId) {
+        self.deferred
+            .push_back(Deferred::Tree(Box::new(move |root| {
+                root.remove_child(id);
+            })));
     }
 
     /// The id of the player with this UUID who is here now, or `None` if nobody is.
@@ -1141,6 +1268,31 @@ impl World {
         }
     }
 
+    /// Does what the handlers asked for while the tree was in use, and what that leads to:
+    /// departures first, then the requests in the order they were made.
+    fn settle(&mut self) {
+        let mut done = 0;
+        loop {
+            self.flush_departures();
+            let Some(request) = self.ctx.deferred.pop_front() else {
+                return;
+            };
+            if done == MAX_DEFERRED {
+                tracing::error!(
+                    dropped = self.ctx.deferred.len() + 1,
+                    "handlers keep asking for more; dropping the rest of the requests"
+                );
+                self.ctx.deferred.clear();
+                continue;
+            }
+            done += 1;
+            match request {
+                Deferred::Emit(emit) => emit(self),
+                Deferred::Tree(change) => change(&mut self.events),
+            }
+        }
+    }
+
     fn join(&mut self, profile: Profile, outbound: tokio::sync::mpsc::Sender<Packets>) {
         let joined = self.ctx.join(profile, outbound);
         // a player who was replaced by this one has left before this one is here
@@ -1255,11 +1407,11 @@ impl Instance for World {
                 }
             }
         }
-        self.flush_departures();
+        self.settle();
     }
 
     fn tick(&mut self) {
         self.ctx.tick();
-        self.flush_departures();
+        self.settle();
     }
 }

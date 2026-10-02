@@ -1,6 +1,6 @@
 # イベントノードの拡張 実装計画（M2-02）
 
-> **Status**: 計画確定（実装前） — 2026-10-02
+> **Status**: 実装済み — 2026-10-02
 
 要件: REQ-API-009。決定: D6・D16・D29 の (2)・D31（[decisions.md](../decisions.md)）。Minestom との対照は [minestom-parity.md](minestom-parity.md) の 6.1〜6.12。
 `event.rs` と `world.rs` にまたがる。M2-16（操作イベント）・M2-17（エンティティ）・M2-21（GUI）・M2-25（`derive(Event)`）が、この形の上に載る。
@@ -19,7 +19,7 @@ M2-01 で木は `Ctx` の外に出たが、まだ次が足りない。
 
 ### 1. 優先度
 
-- `Priority(i32)`、大きいほど先。既定は 0。同じ優先度は追加順
+- 優先度は `i32`、大きいほど先。既定は 0。同じ優先度は追加順
 - **付ける場所は 2 つ**: ハンドラ（同じノード内の順）とノード（兄弟の子ノードの順）。木をまたいだ全ハンドラの総順位は作らない
 - 理由: 総順位にすると発火のたびに部分木の全ハンドラを集めて並べ直すことになり、ホットパス（`PlayerMove` 等）で確保が要る。ノード単位なら、追加時に 1 回整列するだけで済む。Minestom も優先度はノード単位
 
@@ -27,11 +27,11 @@ M2-01 で木は `Ctx` の外に出たが、まだ次が足りない。
 
 ```rust
 node.on::<Chat>(h);                                   // 今までどおり
-node.listen::<Chat>().priority(10).times(1).until(|e, ctx| ..).ignore_cancelled().add(h);  // -> ListenerId
-node.off(id);
+node.add_listener(Listener::new(h).priority(10).times(1).until(|e, ctx| ..).ignore_cancelled());  // -> ListenerId
+node.remove_listener(id);
 ```
 
-- `listen` は builder を返し、最後の `.add(h)` で登録して `ListenerId` を返す。途中で捨てても何も登録されない。`on` は `listen::<E>().add(h)` の薄い別名で、今までどおり `&mut Self` を返す
+- `Listener::new(h)` が builder で、`add_listener` が登録して `ListenerId` を返す。`ctx.add_listener` も同じ `Listener` を受ける（ノード用とハンドラ用で builder を二重に持たないため）。`on` は `add_listener(Listener::new(h))` の薄い別名で、今までどおり `&mut Self` を返す
 - `times(n)`: n 回呼んだら外れる。`until(pred)`: pred が `true` になった発火の**前**に外れる（呼ばれない）。両方付けたら先に成り立った方
 - `ignore_cancelled()`: その時点で `is_cancelled()` のイベントを受けない。既定は受ける（今の動き。「全部呼ぶ」は `emit` の doc が保証している）
 - 外れたハンドラは、その発火の最後に取り除く（走査中に `Vec` を変えない）
@@ -77,9 +77,9 @@ Rust に継承は無いので、**親は trait、ハンドラは `dyn Trait` で
 pub trait PlayerEvent { fn player(&self) -> PlayerId; }
 
 impl Event for PlayerChatEvent {
-    fn parents(&mut self, v: &mut Parents<'_>) { v.visit::<dyn PlayerEvent>(self); }
+    fn parents<C: 'static>(&mut self, v: &mut Parents<'_, C>) { v.visit::<dyn PlayerEvent>(self); }
 }
-node.on::<dyn PlayerEvent>(|e, ctx| ..);   // チャットもブロック設置も受ける
+node.on::<dyn PlayerEvent>(|e, ctx| ..);   // チャットもブロック設置も受ける。引数に型を書かない（書くと寿命が推論できずコンパイルできない）
 ```
 
 - `E: ?Sized` を許し、`TypeId::of::<dyn PlayerEvent>()` で引く。`Parents::visit` が `&mut Self` を `&mut dyn PlayerEvent` に変えて、親の型のハンドラを呼ぶ
@@ -97,6 +97,13 @@ node.on::<dyn PlayerEvent>(|e, ctx| ..);   // チャットもブロック設置�
 
 - 今の `Server` は Instance を 1 つしか走らせない（`RunningServer::instance()`）。**サーバー全体のルートと Instance ごとのノードの二層**は、複数 Instance が来る単位がやる（受け皿 → 下の表）
 - この単位では、`World` が持つ木が「その Instance のノード」であることを、doc と `events_mut` のテスト（2 つの `World` が互いのハンドラを呼ばない）で固定する
+
+## 実装で計画から変えたこと
+
+- 登録は `node.listen::<E>()...add(h)` ではなく `Listener::new(h)...` を `add_listener` に渡す形（2.）
+- 親 trait のハンドラの `ignore_cancelled` は、そのノードの親向けハンドラが走り始めた時点のキャンセル状態で判断する（`&mut dyn Trait` からは具体的なイベントのキャンセル状態を読めないため）
+- `ctx.add_listener` / `ctx.add_node` / `ctx.remove_*` はすべて遅延で、削除も次のイベントから効く
+- 暴走の上限は 1 回の `handle`・`tick` につき 1000 件（`MAX_DEFERRED`）
 
 ## 確認して決めたこと（2026-10-02）
 
