@@ -91,7 +91,7 @@
 | ✅ | M2-07 | plugin message（[計画](plugin-message-plan.md)） | M2-06 | #41 |
 | ✅ | M2-08 | Velocity modern forwarding（[計画](velocity-forwarding-plan.md)） | M2-07 | #42 |
 | ✅ | M2-09 | BungeeCord / BungeeGuard（[計画](bungeecord-forwarding-plan.md)） | M2-06, M2-08（同じ設定の入り口） | #43 |
-| ⬜ | M2-10 | HAProxy PROXY protocol | M2-06 | — |
+| ✅ | M2-10 | HAProxy PROXY protocol（[計画](haproxy-proxy-protocol-plan.md)） | M2-06 | #44 |
 | 🟡 | M2-11 | Component の完全版 | — | — |
 | ⬜ | M2-12 | MiniMessage | M2-11 | — |
 | ⬜ | M2-13 | `text!` | M2-12 | — |

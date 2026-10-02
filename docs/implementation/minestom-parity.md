@@ -33,7 +33,7 @@
 | 1.5 | offline mode | ✅ | — |
 | 1.6 | Velocity modern forwarding | ✅ `Server::forwarding(Forwarding::Velocity { secret })`。スキンはタブリスト、接続元は `ctx.remote_addr`（実 Velocity 4.2.0 で UUID・名前・接続元・秘密違いの拒否を確認。skin 付きは未確認） | — |
 | 1.7 | BungeeCord / BungeeGuard 転送 | ✅ `Forwarding::BungeeCord { trusted }`・`Forwarding::BungeeGuard { tokens }`（ボットの BungeeCord 役で確認。実 BungeeCord は未確認） | — |
-| 1.8 | HAProxy PROXY protocol v1/v2（任意・必須） | ⬜ | REQ-NET-004（v0.2） |
+| 1.8 | HAProxy PROXY protocol v1/v2（任意・必須） | ✅ `Server::proxy_protocol(ProxyProtocol)`（ボットの HAProxy 役で確認。実 HAProxy は未確認） | — |
 | 1.9 | login 段階の plugin message（タイムアウト付き） | 🔶 `login::Queries::ask`（D38）。利用者向けのフックは無い | フックは M2-04（pre-login の async イベント） |
 | 1.10 | サーバー一覧（装飾 MOTD・favicon・プレイヤーサンプル・偽装版・ping の種類を区別するイベント） | 🔶 平文 MOTD・在線人数と最大人数（`Server::max_players`。D37） | 残りは REQ-NET-002（v0.3） |
 | 1.11 | 旧形式（1.6 以下）の ping | ⬜ | REQ-NET-011（v0.8） |
@@ -291,7 +291,7 @@
 | 10.4 | tick の監視イベント | 🔶 `TickStats` を取れるのみ | REQ-OPS-001（v0.8） |
 | 10.5 | 例外ハンドラ | ⬜ ハンドラの panic で Instance のスレッドが止まる | REQ-OPS-003（v0.3） |
 | 10.6 | シャットダウン（シグナルで止める） | ✅ `Server::run` が Ctrl-C で `shutdown`（D37） | — |
-| 10.7 | 設定項目（約 60） | 🔶 motd・brand・REQ-NET-006 の 7 項目・`forwarding`（Velocity・BungeeCord・BungeeGuard）・`forwarding_timeout` | 項目ごとの REQ（proxy 系の HAProxy は M2-10 が同じ入り口に足す） |
+| 10.7 | 設定項目（約 60） | 🔶 motd・brand・REQ-NET-006 の 7 項目・`forwarding`（Velocity・BungeeCord・BungeeGuard）・`forwarding_timeout`・`proxy_protocol` | 項目ごとの REQ |
 | 10.8 | Mojang プロフィールの取得・署名の検証 | ⬜ | REQ-PLAYER-003（v0.3） |
 | 10.9 | プロセスの作り直し | 不要 | `Server` を作り直せば足りる（グローバルな状態を持たない、D6） |
 | 10.10 | テスト支援 | ✅ `test-util`（D21） | — |

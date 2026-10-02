@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use lodeframe::{
     chunk::FlatGenerator,
+    net::ProxyProtocol,
     protocol::{
         FrameDecoder, Identifier, VarInt, encode_frame, packet_body,
         packets::{
@@ -19,7 +20,7 @@ use lodeframe::{
     server::{Forwarding, RunningServer, Server},
     world::{Ctx, PlayerJoinEvent, PluginMessageEvent, World},
 };
-use lodeframe_bot::{Bot, Bungee, Velocity};
+use lodeframe_bot::{Bot, Bungee, HaProxy, Velocity};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -334,8 +335,16 @@ async fn start_behind_proxy() -> RunningServer {
 }
 
 async fn start_behind(forwarding: Forwarding) -> RunningServer {
+    start_behind_balancer(forwarding, ProxyProtocol::Off).await
+}
+
+async fn start_behind_balancer(
+    forwarding: Forwarding,
+    proxy_protocol: ProxyProtocol,
+) -> RunningServer {
     Server::new("127.0.0.1:0")
         .forwarding(forwarding)
+        .proxy_protocol(proxy_protocol)
         .forwarding_timeout(Duration::from_millis(300))
         .start(|registries: &Registries| {
             let mut world = World::new(registries, FlatGenerator::default());
@@ -634,6 +643,120 @@ async fn an_empty_trusted_list_or_token_does_not_start() {
     ] {
         let result = Server::new("127.0.0.1:0")
             .forwarding(forwarding)
+            .start(|registries: &Registries| World::new(registries, FlatGenerator::default()))
+            .await;
+
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+    }
+}
+
+fn balancer(trusted: &str) -> ProxyProtocol {
+    ProxyProtocol::Required {
+        trusted: vec![trusted.parse().unwrap()],
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bot_behind_a_balancer_has_the_address_the_header_names() {
+    let server = start_behind_balancer(Forwarding::None, balancer("127.0.0.1")).await;
+
+    for header in [
+        HaProxy::V1("198.51.100.9:4000".parse().unwrap()),
+        HaProxy::V2("198.51.100.9:4000".parse().unwrap()),
+    ] {
+        let mut steve = Bot::connect_haproxy(server.addr(), "Steve", header)
+            .await
+            .unwrap();
+        assert_eq!(who(&mut steve).await, b"Some(198.51.100.9) 0");
+    }
+    // a local check names nobody, so there is no address to tell
+    let mut alex = Bot::connect_haproxy(server.addr(), "Alex", HaProxy::V2Local)
+        .await
+        .unwrap();
+    assert_eq!(who(&mut alex).await, b"None 0");
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_that_wants_a_header_turns_away_a_connection_without_one() {
+    let server = start_behind_balancer(Forwarding::None, balancer("127.0.0.1")).await;
+
+    assert!(Bot::connect(server.addr(), "Steve").await.is_err());
+    wait_for_online(&server, 0).await;
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_header_from_an_address_that_is_not_trusted_does_not_get_a_bot_in() {
+    let server = start_behind_balancer(
+        Forwarding::None,
+        ProxyProtocol::Optional {
+            trusted: vec!["203.0.113.1".parse().unwrap()],
+        },
+    )
+    .await;
+
+    let header = HaProxy::V1("198.51.100.9:4000".parse().unwrap());
+    assert!(
+        Bot::connect_haproxy(server.addr(), "Steve", header)
+            .await
+            .is_err()
+    );
+    // without a header it is an ordinary connection, which is allowed here
+    let mut alex = Bot::connect(server.addr(), "Alex").await.unwrap();
+    assert_eq!(who(&mut alex).await, b"None 0");
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bungeecord_trusts_the_client_a_header_names_not_the_balancer() {
+    let server = start_behind_balancer(
+        Forwarding::BungeeCord {
+            trusted: vec!["198.51.100.50".parse().unwrap()],
+        },
+        balancer("127.0.0.1"),
+    )
+    .await;
+    let proxy = || {
+        let mut proxy = Bungee::new(lodeframe::protocol::Uuid(7));
+        proxy.address = "203.0.113.9".into();
+        proxy
+    };
+
+    // the balancer says the proxy is 198.51.100.50, which BungeeCord's list has
+    let header = HaProxy::V1("198.51.100.50:4000".parse().unwrap());
+    let mut steve = Bot::connect_haproxy_bungee(server.addr(), "Steve", header, proxy())
+        .await
+        .unwrap();
+    // the address the proxy forwards is the player's
+    assert_eq!(who(&mut steve).await, b"Some(203.0.113.9) 0");
+
+    // another address is not on the list, and neither is the balancer itself
+    for header in [
+        HaProxy::V1("198.51.100.51:4000".parse().unwrap()),
+        HaProxy::V2Local,
+    ] {
+        assert!(
+            Bot::connect_haproxy_bungee(server.addr(), "Alex", header, proxy())
+                .await
+                .is_err()
+        );
+    }
+    server.stop();
+}
+
+#[tokio::test]
+async fn an_empty_list_of_balancers_does_not_start() {
+    for proxy_protocol in [
+        ProxyProtocol::Optional {
+            trusted: Vec::new(),
+        },
+        ProxyProtocol::Required {
+            trusted: Vec::new(),
+        },
+    ] {
+        let result = Server::new("127.0.0.1:0")
+            .proxy_protocol(proxy_protocol)
             .start(|registries: &Registries| World::new(registries, FlatGenerator::default()))
             .await;
 

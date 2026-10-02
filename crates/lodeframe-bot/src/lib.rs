@@ -8,7 +8,11 @@
 //!
 //! It speaks to lodeframe servers: login and configuration are done the way they answer them.
 
-use std::{io, time::Duration};
+use std::{
+    io,
+    net::{IpAddr, Ipv6Addr, SocketAddr},
+    time::Duration,
+};
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -169,6 +173,72 @@ impl Bungee {
             self.uuid.0,
             items.join(",")
         )
+    }
+}
+
+/// The header a load balancer such as HAProxy writes at the start of a connection (the PROXY
+/// protocol), which the bot plays. Written here from the balancer's side of the protocol, not
+/// with the server's code, so that it checks that code.
+///
+/// Give it to [`Bot::connect_haproxy`] or [`Bot::login_haproxy`].
+#[derive(Debug, Clone)]
+pub enum HaProxy {
+    /// A version 1 (text) header saying the client is at this address.
+    V1(SocketAddr),
+    /// A version 2 (binary) header saying the client is at this address.
+    V2(SocketAddr),
+    /// A version 2 header of a local check, which names no client.
+    V2Local,
+    /// These bytes in place of a header, for a balancer that gets it wrong.
+    Raw(Vec<u8>),
+}
+
+impl HaProxy {
+    fn bytes(&self) -> Vec<u8> {
+        const SIGNATURE: &[u8] = b"\r\n\r\n\0\r\nQUIT\n";
+        match self {
+            Self::V1(client) => {
+                let (proto, to) = if client.is_ipv4() {
+                    ("TCP4", "127.0.0.1")
+                } else {
+                    ("TCP6", "::1")
+                };
+                format!(
+                    "PROXY {proto} {} {to} {} 25565\r\n",
+                    client.ip(),
+                    client.port()
+                )
+                .into_bytes()
+            }
+            Self::V2(client) => {
+                let mut body = Vec::new();
+                let family = match client.ip() {
+                    IpAddr::V4(ip) => {
+                        body.extend(ip.octets());
+                        body.extend([127, 0, 0, 1]);
+                        0x11
+                    }
+                    IpAddr::V6(ip) => {
+                        body.extend(ip.octets());
+                        body.extend(Ipv6Addr::LOCALHOST.octets());
+                        0x21
+                    }
+                };
+                body.extend(client.port().to_be_bytes());
+                body.extend(25565u16.to_be_bytes());
+                let mut header = SIGNATURE.to_vec();
+                header.extend([0x21, family]);
+                header.extend((body.len() as u16).to_be_bytes());
+                header.extend(body);
+                header
+            }
+            Self::V2Local => {
+                let mut header = SIGNATURE.to_vec();
+                header.extend([0x20, 0x00, 0x00, 0x00]);
+                header
+            }
+            Self::Raw(bytes) => bytes.clone(),
+        }
     }
 }
 
@@ -349,26 +419,63 @@ impl Bot<TcpStream> {
     }
 }
 
+impl Bot<TcpStream> {
+    /// Like [`connect`](Self::connect), behind the balancer that writes `header`.
+    pub async fn connect_haproxy(
+        addr: impl ToSocketAddrs,
+        name: &str,
+        header: HaProxy,
+    ) -> Result<Self> {
+        let stream = TcpStream::connect(addr).await?;
+        stream.set_nodelay(true)?;
+        Self::login_haproxy(stream, name, header).await
+    }
+
+    /// Like [`connect_bungee`](Self::connect_bungee), behind the balancer that writes `header`:
+    /// a BungeeCord proxy that is itself reached through a balancer.
+    pub async fn connect_haproxy_bungee(
+        addr: impl ToSocketAddrs,
+        name: &str,
+        header: HaProxy,
+        proxy: Bungee,
+    ) -> Result<Self> {
+        let stream = TcpStream::connect(addr).await?;
+        stream.set_nodelay(true)?;
+        Self::log_in(stream, name, Some(Proxy::Bungee(proxy)), Some(header)).await
+    }
+}
+
 impl<S: AsyncRead + AsyncWrite + Unpin> Bot<S> {
     /// Logs in as `name` over `stream`: handshake, login, configuration, and the first packets
     /// of the play state. Gives up after 30 seconds.
     pub async fn login(stream: S, name: &str) -> Result<Self> {
-        Self::log_in(stream, name, None).await
+        Self::log_in(stream, name, None, None).await
     }
 
     /// Like [`login`](Self::login), behind the Velocity proxy `proxy`: the server's forwarding
     /// query is answered, and the bot takes the proxy's UUID.
     pub async fn login_behind(stream: S, name: &str, proxy: Velocity) -> Result<Self> {
-        Self::log_in(stream, name, Some(Proxy::Velocity(proxy))).await
+        Self::log_in(stream, name, Some(Proxy::Velocity(proxy)), None).await
     }
 
     /// Like [`login`](Self::login), behind the BungeeCord proxy `proxy`: the handshake carries
     /// the proxy's forwarding, and the bot takes the proxy's UUID.
     pub async fn login_bungee(stream: S, name: &str, proxy: Bungee) -> Result<Self> {
-        Self::log_in(stream, name, Some(Proxy::Bungee(proxy))).await
+        Self::log_in(stream, name, Some(Proxy::Bungee(proxy)), None).await
     }
 
-    async fn log_in(stream: S, name: &str, proxy: Option<Proxy>) -> Result<Self> {
+    /// Like [`login`](Self::login), behind the balancer that writes `header` before the
+    /// handshake.
+    pub async fn login_haproxy(stream: S, name: &str, header: HaProxy) -> Result<Self> {
+        Self::log_in(stream, name, None, Some(header)).await
+    }
+
+    async fn log_in(
+        stream: S,
+        name: &str,
+        proxy: Option<Proxy>,
+        haproxy: Option<HaProxy>,
+    ) -> Result<Self> {
         let mut bot = Self {
             stream,
             decoder: FrameDecoder::new(),
@@ -383,13 +490,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Bot<S> {
             received: 0,
             brand: None,
         };
-        timeout(JOIN_TIMEOUT, bot.join(proxy.as_ref()))
+        timeout(JOIN_TIMEOUT, bot.join(proxy.as_ref(), haproxy.as_ref()))
             .await
             .map_err(|_| Error::from(io::Error::from(io::ErrorKind::TimedOut)))??;
         Ok(bot)
     }
 
-    async fn join(&mut self, proxy: Option<&Proxy>) -> Result<()> {
+    async fn join(&mut self, proxy: Option<&Proxy>, haproxy: Option<&HaProxy>) -> Result<()> {
+        if let Some(header) = haproxy {
+            // before anything else, as a balancer does
+            self.stream.write_all(&header.bytes()).await?;
+        }
         self.send(&Intention {
             protocol_version: VarInt(PROTOCOL_VERSION),
             server_address: match proxy {
