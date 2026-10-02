@@ -134,3 +134,30 @@ async fn a_client_without_the_core_pack_is_refused() {
         .unwrap();
     assert!(task.await.unwrap().is_err());
 }
+
+#[tokio::test]
+async fn a_client_that_never_answers_the_known_packs_times_out() {
+    let (a, b) = duplex(1 << 16);
+    let mut server = Connection::new(a, T);
+    let mut client = Connection::new(b, T);
+    server.set_state(State::Configuration);
+    let task = tokio::spawn(async move {
+        configuration::run_with(
+            &mut server,
+            &Registries::vanilla(),
+            "x",
+            Duration::from_millis(100),
+        )
+        .await
+    });
+    let _: ClientboundCustomPayload = client.read_packet().await.unwrap();
+    let _: UpdateEnabledFeatures = client.read_packet().await.unwrap();
+    let _: ClientboundKnownPacks = client.read_packet().await.unwrap();
+
+    // the client says nothing, so the server gives up long before the connection's own timeout
+    let started = std::time::Instant::now();
+    let result = tokio::time::timeout(T, task).await.unwrap().unwrap();
+
+    assert!(result.is_err());
+    assert!(started.elapsed() < Duration::from_secs(2));
+}

@@ -155,7 +155,11 @@ impl Lobby {
     ) -> Result<(Self, Duration)> {
         let begun = Instant::now();
         let mut command = Command::new(binary);
-        command.arg(addr.to_string()).env("LOBBY_STATS", "1");
+        // the bots outnumber the lobby's default of 20 places
+        command
+            .arg(addr.to_string())
+            .env("LOBBY_STATS", "1")
+            .env("LOBBY_MAX_PLAYERS", "10000");
         if let Some(view_distance) = view_distance {
             command.env("LOBBY_VIEW_DISTANCE", view_distance.to_string());
         }

@@ -110,6 +110,7 @@ async fn a_bad_connection_is_dropped_and_the_server_keeps_serving() {
     let addr = listener.local_addr().unwrap();
     let config = Config {
         read_timeout: Duration::from_millis(200),
+        ..Config::default()
     };
     tokio::spawn(serve(listener, config, |mut conn, _| async move {
         conn.write_frame(&[0x00, b'o', b'k']).await

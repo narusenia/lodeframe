@@ -16,8 +16,12 @@ use lodeframe::{
     instance::{self, Instance, Message, OUTBOX, Runner, Sessions, TICK, TickStats},
     login::Profile,
     net::Connection,
-    play,
-    protocol::{State, Uuid, packets::play::KeepAliveResponse},
+    play::{self, KeepAliveConfig},
+    protocol::{
+        Decode, State, Uuid, ids,
+        packets::play::{KeepAlive, KeepAliveResponse},
+        split_packet_id,
+    },
 };
 use tokio::{io::duplex, sync::mpsc, time::timeout};
 
@@ -388,6 +392,7 @@ impl Instance for Echo {
                 self.log.lock().unwrap().push("leave".into());
                 self.sessions.leave(player);
             }
+            Message::Latency { .. } => {}
         }
     }
 
@@ -409,10 +414,12 @@ async fn play_relays_packets_both_ways_and_keeps_keepalives_to_itself() {
         uuid: Uuid(7),
         name: "Steve".into(),
     };
-    let task = tokio::spawn(play::run(server, profile, handle));
+    let task = tokio::spawn(play::run_with(server, profile, handle, quick_keep_alive()));
 
+    // the server asks, and the answer stays between it and the connection
+    let asked = read_keep_alive(&mut client).await;
     client
-        .write_packet(&KeepAliveResponse { id: 1 })
+        .write_packet(&KeepAliveResponse { id: asked })
         .await
         .unwrap();
     client.write_frame(&[0x05, 1, 2]).await.unwrap();
@@ -432,4 +439,188 @@ async fn play_relays_packets_both_ways_and_keeps_keepalives_to_itself() {
     assert!(timeout(T, task).await.unwrap().unwrap().is_err());
     runner.step();
     assert_eq!(log.lock().unwrap().last().unwrap(), "leave");
+}
+
+fn quick_keep_alive() -> KeepAliveConfig {
+    KeepAliveConfig {
+        interval: Duration::from_millis(20),
+        timeout: Duration::from_millis(300),
+    }
+}
+
+/// Reads until the server's keep alive arrives, returning its id.
+async fn read_keep_alive<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    client: &mut Connection<S>,
+) -> i64 {
+    loop {
+        let body = timeout(T, client.read_frame()).await.unwrap().unwrap();
+        let (id, mut payload) = split_packet_id(&body).unwrap();
+        if id == ids::play::clientbound::KEEP_ALIVE {
+            return KeepAlive::decode(&mut payload).unwrap().id;
+        }
+    }
+}
+
+/// Reads until the connection ends, returning whether the server said it was disconnecting the
+/// player first.
+async fn ends_with_a_disconnect<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    client: &mut Connection<S>,
+) -> bool {
+    let mut told = false;
+    while let Ok(body) = timeout(T, client.read_frame()).await.unwrap() {
+        let (id, _) = split_packet_id(&body).unwrap();
+        told |= id == ids::play::clientbound::DISCONNECT;
+    }
+    told
+}
+
+/// Keeps the latencies it was told of, and the players' channels open.
+struct Probe {
+    latencies: Arc<std::sync::Mutex<Vec<Duration>>>,
+    sessions: Sessions,
+}
+
+impl Instance for Probe {
+    fn handle(&mut self, message: Message) {
+        match message {
+            Message::Join { profile, outbound } => self.sessions.join(profile.uuid, outbound),
+            Message::Latency { rtt, .. } => self.latencies.lock().unwrap().push(rtt),
+            _ => {}
+        }
+    }
+    fn tick(&mut self) {}
+}
+
+/// A connection task running against a [`Probe`].
+struct Probed {
+    client: Connection<tokio::io::DuplexStream>,
+    task: tokio::task::JoinHandle<lodeframe::protocol::Result<()>>,
+    latencies: Arc<std::sync::Mutex<Vec<Duration>>>,
+    handle: instance::InstanceHandle,
+}
+
+/// Starts a connection task on a [`Probe`].
+fn probed_connection() -> Probed {
+    let latencies = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = latencies.clone();
+    let handle = instance::spawn(
+        "probe",
+        SystemClock,
+        tokio::runtime::Handle::current(),
+        move || Probe {
+            latencies: seen,
+            sessions: Sessions::default(),
+        },
+    )
+    .unwrap();
+    let (a, b) = duplex(1 << 16);
+    let mut server = Connection::new(a, T);
+    server.set_state(State::Play);
+    let client = Connection::new(b, T);
+    let profile = Profile {
+        uuid: Uuid(7),
+        name: "Steve".into(),
+    };
+    let task = tokio::spawn(play::run_with(
+        server,
+        profile,
+        handle.clone(),
+        quick_keep_alive(),
+    ));
+    Probed {
+        client,
+        task,
+        latencies,
+        handle,
+    }
+}
+
+#[tokio::test]
+async fn an_answered_keep_alive_tells_the_instance_the_latency() {
+    let Probed {
+        mut client,
+        task,
+        latencies,
+        handle,
+    } = probed_connection();
+
+    let id = read_keep_alive(&mut client).await;
+    tokio::time::sleep(ms(30)).await;
+    client
+        .write_packet(&KeepAliveResponse { id })
+        .await
+        .unwrap();
+    for _ in 0..200 {
+        if !latencies.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(ms(10)).await;
+    }
+
+    let seen = latencies.lock().unwrap().clone();
+    assert_eq!(seen.len(), 1);
+    // it took at least the 30 ms the client waited
+    assert!(seen[0] >= ms(30), "{:?}", seen[0]);
+    drop(client);
+    let _ = timeout(T, task).await;
+    handle.stop();
+}
+
+#[tokio::test]
+async fn a_wrong_keep_alive_id_gets_the_player_disconnected() {
+    let Probed {
+        mut client,
+        task,
+        latencies,
+        handle,
+    } = probed_connection();
+
+    let id = read_keep_alive(&mut client).await;
+    client
+        .write_packet(&KeepAliveResponse { id: id + 100 })
+        .await
+        .unwrap();
+
+    assert!(ends_with_a_disconnect(&mut client).await);
+    assert!(timeout(T, task).await.unwrap().unwrap().is_err());
+    assert!(latencies.lock().unwrap().is_empty());
+    handle.stop();
+}
+
+#[tokio::test]
+async fn an_answer_nobody_asked_for_gets_the_player_disconnected() {
+    let Probed {
+        mut client,
+        task,
+        handle,
+        ..
+    } = probed_connection();
+
+    client
+        .write_packet(&KeepAliveResponse { id: 1 })
+        .await
+        .unwrap();
+
+    assert!(ends_with_a_disconnect(&mut client).await);
+    assert!(timeout(T, task).await.unwrap().unwrap().is_err());
+    handle.stop();
+}
+
+#[tokio::test]
+async fn a_keep_alive_left_unanswered_times_the_player_out() {
+    let Probed {
+        mut client,
+        task,
+        handle,
+        ..
+    } = probed_connection();
+    let started = Instant::now();
+
+    // never answers; the server sends the keep alive and then gives up
+    assert!(ends_with_a_disconnect(&mut client).await);
+
+    let waited = started.elapsed();
+    assert!(waited >= ms(300), "{waited:?}");
+    assert!(timeout(T, task).await.unwrap().unwrap().is_err());
+    handle.stop();
 }

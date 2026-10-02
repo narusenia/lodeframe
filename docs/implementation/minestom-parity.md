@@ -28,14 +28,14 @@
 |---|---|---|---|
 | 1.1 | 最新 1 版だけを追う（旧版は ViaProxy） | ✅ 26.3（D3） | — |
 | 1.2 | TCP と Unix ドメインソケットで待受 | 🔶 TCP のみ | REQ-NET-011（v0.8） |
-| 1.3 | 圧縮しきい値の設定 | 🔶 256 固定 | REQ-NET-006（v0.2） |
+| 1.3 | 圧縮しきい値の設定 | ✅ `Server::compression_threshold`（既定 256） | — |
 | 1.4 | online mode（Mojang 認証・暗号化・認証 URL の差し替え・proxy 接続の拒否） | ⬜ | REQ-AUTH-002（v0.3） |
 | 1.5 | offline mode | ✅ | — |
 | 1.6 | Velocity modern forwarding | ⬜ | REQ-AUTH-001（v0.2） |
 | 1.7 | BungeeCord / BungeeGuard 転送 | ⬜ | REQ-AUTH-003（v0.2） |
 | 1.8 | HAProxy PROXY protocol v1/v2（任意・必須） | ⬜ | REQ-NET-004（v0.2） |
 | 1.9 | login 段階の plugin message（タイムアウト付き） | ⬜ | REQ-NET-005（v0.2） |
-| 1.10 | サーバー一覧（装飾 MOTD・favicon・プレイヤーサンプル・偽装版・ping の種類を区別するイベント） | 🔶 平文 MOTD・人数 0 固定 | 在線人数は REQ-NET-002（v0.2）、残りは REQ-NET-002（v0.3） |
+| 1.10 | サーバー一覧（装飾 MOTD・favicon・プレイヤーサンプル・偽装版・ping の種類を区別するイベント） | 🔶 平文 MOTD・在線人数と最大人数（`Server::max_players`。D37） | 残りは REQ-NET-002（v0.3） |
 | 1.11 | 旧形式（1.6 以下）の ping | ⬜ | REQ-NET-011（v0.8） |
 | 1.12 | ping/pong の遅延・キャンセル | ⬜ | REQ-NET-002（v0.3） |
 | 1.13 | Open to LAN | ⬜ | REQ-NET-011（v0.8） |
@@ -45,7 +45,7 @@
 | 1.17 | リソースパック（送信・削除・必須・状態イベント・configuration 中の送信） | ⬜ | REQ-NET-008（v0.3） |
 | 1.18 | Server links | ⬜ | REQ-PROTO-005（v0.4、Minestom も直送のみ） |
 | 1.19 | Custom report details | ⬜ | REQ-PROTO-005（v0.4、同上） |
-| 1.20 | keep alive の間隔・切断時間の設定、遅延（ping）の取得 | 🔶 15 秒固定、応答 ID を検証しない、遅延を測らない | REQ-NET-006（v0.2） |
+| 1.20 | keep alive の間隔・切断時間の設定、遅延（ping）の取得 | ✅ `Server::keep_alive`、応答 ID の検証、`ctx.ping`（D37） | — |
 | 1.21 | kick（任意の理由） | 🔶 内部の再ログイン処理だけ | REQ-PLAYER-001（v0.2） |
 | 1.22 | パケット制限（tick あたりの数・キュー長・最大サイズ・認証前の上限・NBT の容量・不正パケットの拒否） | 🔶 フレーム長・NBT の深さだけ | REQ-NET-007（v0.3） |
 | 1.23 | 既定のパケット処理の差し替え | ⬜ | REQ-PROTO-005（v0.4） |
@@ -53,7 +53,7 @@
 | 1.25 | 全状態の全パケットを型で公開し直送できる | 🔶 ID は 260 個生成済み、型は v0.1 で使う分だけ | REQ-PROTO-005（v0.4） |
 | 1.26 | バイナリ codec | ✅ `Encode` / `Decode` と derive | — |
 | 1.27 | 送信の最適化（1 回の encode で複数人へ・キャッシュ・まとめ書き） | 🔶 チャンクのキャッシュとまとめ書きのみ | 本体の共有（`Arc`）は REQ-PERF-001（v0.4） |
-| 1.28 | ソケットの調整（バッファ・TCP_NODELAY・タイムアウト） | 🔶 読み取りタイムアウトのみ | REQ-NET-006（v0.2） |
+| 1.28 | ソケットの調整（バッファ・TCP_NODELAY・タイムアウト） | 🔶 `Server::nodelay` と読み取りタイムアウト（バッファの大きさは未対応） | 要望が出てから |
 | 1.29 | サーバーのブランド名 | ✅ `Server::brand` | — |
 | 1.30 | デバッグ描画の購読（26.x） | ⬜ | REQ-NET-012（v0.8） |
 
@@ -62,7 +62,7 @@
 | # | Minestom の機能 | lodeframe | 受け皿 |
 |---|---|---|---|
 | 2.1 | configuration のイベント（出現先・hardcore・チャット消去・registry 送信の有無・feature flags） | ⬜ | REQ-NET-010（v0.3） |
-| 2.2 | Known Packs の交渉（応答タイムアウト付き） | 🔶 交渉あり、タイムアウトは読み取りタイムアウト任せ | REQ-NET-006（v0.2） |
+| 2.2 | Known Packs の交渉（応答タイムアウト付き） | ✅ `Server::known_packs_timeout` | — |
 | 2.3 | vanilla 分を除いた registry の送信 | ✅ | — |
 | 2.4 | 実行中の registry 登録・削除 | 🔶 起動前の `Registries::set` のみ | REQ-PROTO-006（v0.3） |
 | 2.5〜2.19 | 型付きの registry 値（dimension type・biome・damage type・chat type・banner・trim・enchantment と効果部品・painting・jukebox song・instrument・mob の variant・dialog・timeline / world clock・sulfur cube archetype・component predicate） | 🔶 32 種を名前で扱う。値を組み立てる型が無い | REQ-PROTO-006（v0.3） |
@@ -261,7 +261,7 @@
 | 8.5 | 次回を自分で決めるタスク | ✅ `Next::After` | — |
 | 8.6 | Executor として使う | 不要 | Instance スレッドへの投入は `ctx.spawn` の戻し（D16、実装済み: D33）で足りる |
 | 8.7 | シャットダウン時のタスク | ⬜ | REQ-NET-006（v0.2、停止処理と一緒に） |
-| 8.8 | tick レート・追いつきの上限の設定 | 🔶 20 TPS・2 秒で固定 | REQ-NET-006（v0.2） |
+| 8.8 | tick レート・追いつきの上限の設定 | ✅ `Server::tick_rate`・`max_catch_up`（D37） | — |
 | 8.9 | ThreadDispatcher（Instance 内の並列 tick） | ⬜ | 別枠（D6、region 分割） |
 | 8.10 | ThreadProvider | ⬜ | 別枠（D6、同上） |
 | 8.11 | Acquirable（別スレッドの物へ安全に触る） | 不要 | Instance 間は message passing のみ（D6）。所有は型が保証する |
@@ -290,8 +290,8 @@
 | 10.3 | Snapshot（不変の状態の写し） | ⬜ | REQ-OPS-002（v0.8） |
 | 10.4 | tick の監視イベント | 🔶 `TickStats` を取れるのみ | REQ-OPS-001（v0.8） |
 | 10.5 | 例外ハンドラ | ⬜ ハンドラの panic で Instance のスレッドが止まる | REQ-OPS-003（v0.3） |
-| 10.6 | シャットダウン（シグナルで止める） | 🔶 `RunningServer::stop` のみ | REQ-NET-006（v0.2） |
-| 10.7 | 設定項目（約 60） | 🔶 motd と brand | 項目ごとの REQ。まとめは REQ-NET-006（v0.2） |
+| 10.6 | シャットダウン（シグナルで止める） | 🔶 `RunningServer::stop` のみ | M2-28 |
+| 10.7 | 設定項目（約 60） | 🔶 motd・brand・REQ-NET-006 の 7 項目 | 項目ごとの REQ（proxy 系は M2-08〜10 が同じ入り口に足す） |
 | 10.8 | Mojang プロフィールの取得・署名の検証 | ⬜ | REQ-PLAYER-003（v0.3） |
 | 10.9 | プロセスの作り直し | 不要 | `Server` を作り直せば足りる（グローバルな状態を持たない、D6） |
 | 10.10 | テスト支援 | ✅ `test-util`（D21） | — |

@@ -2233,3 +2233,42 @@ fn the_tick_number_goes_up_by_one_with_each_tick() {
 
     assert_eq!(env.instance().now().as_ticks() - start.as_ticks(), 7);
 }
+
+#[test]
+fn a_players_ping_is_what_the_last_keep_alive_took_and_goes_with_them() {
+    let mut env = env();
+    let steve = env.connect("Steve");
+    let alex = env.connect("Alex");
+    let steve_id = id_of(&env, &steve);
+    let alex_id = id_of(&env, &alex);
+    assert_eq!(env.instance().ping(steve_id), None);
+
+    env.ping(&steve, std::time::Duration::from_millis(40));
+    env.ping(&steve, std::time::Duration::from_millis(25));
+
+    let ms = std::time::Duration::from_millis;
+    assert_eq!(env.instance().ping(steve_id), Some(ms(25)));
+    // another player's ping is their own
+    assert_eq!(env.instance().ping(alex_id), None);
+    env.disconnect(steve);
+    assert_eq!(env.instance().ping(steve_id), None);
+}
+
+#[test]
+fn a_handler_can_read_the_ping() {
+    let mut env = env();
+    let seen = log();
+    let l = seen.clone();
+    env.instance_mut()
+        .events_mut()
+        .on(move |e: &mut ChatEvent, ctx: &mut Ctx| {
+            note(&l, format!("{:?}", ctx.ping(e.player)));
+        });
+    let steve = env.connect("Steve");
+
+    say(&mut env, &steve, "a");
+    env.ping(&steve, std::time::Duration::from_millis(33));
+    say(&mut env, &steve, "b");
+
+    assert_eq!(*seen.borrow(), ["None", "Some(33ms)"]);
+}

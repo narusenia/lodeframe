@@ -4,7 +4,8 @@
 //! `RUST_LOG=debug` (or `trace`, `warn`, ...) sets how much is logged; the default is `info`.
 //!
 //! For `cargo xtask bench`: with `LOBBY_STATS` set it prints a `tick-stats` line to the standard
-//! output every second, and `LOBBY_VIEW_DISTANCE` sets the chunk radius players get.
+//! output every second, `LOBBY_VIEW_DISTANCE` sets the chunk radius players get and
+//! `LOBBY_MAX_PLAYERS` sets how many may be on at once (20 if unset).
 
 use std::time::Duration;
 
@@ -25,8 +26,14 @@ async fn main() -> std::io::Result<()> {
     let view_distance: Option<u32> = std::env::var("LOBBY_VIEW_DISTANCE")
         .ok()
         .and_then(|v| v.parse().ok());
-    let server = Server::new(addr)
-        .motd("lodeframe lobby")
+    let max_players: Option<u32> = std::env::var("LOBBY_MAX_PLAYERS")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    let mut server = Server::new(addr).motd("lodeframe lobby");
+    if let Some(max_players) = max_players {
+        server = server.max_players(max_players);
+    }
+    let server = server
         .start(move |registries| {
             let mut world = lobby::lobby(registries);
             if let Some(view_distance) = view_distance {

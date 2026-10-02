@@ -1,6 +1,6 @@
 # サーバーの設定と停止 実装計画（M2-06・M2-28）
 
-> **Status**: 未着手 — 2026-10-02 計画作成
+> **Status**: M2-06 実装済み・M2-28 未着手 — 2026-10-02
 
 要件: REQ-NET-006、REQ-NET-002（在線人数）。決定: D6・D16・D21・D34（[decisions.md](../decisions.md)）。
 本体の単一 crate 内の変更（`server.rs`・`play.rs`・`instance.rs`・`world.rs`・`status.rs`）。設計ゲートの対象外だが、M2-07〜10（proxy 系）が設定を足す入り口になるので、形を先に決める。
@@ -39,7 +39,7 @@ M2-07・09・10 が待つのは設定の入り口だけなので、依存は M2-
 ### 2. 在線人数と最大人数
 
 - `Server` が `Arc<AtomicU32>` の**数だけ**を持ち、conn task が数える。Instance の状態は共有しない（D6 の対象は Instance の状態。読み取り専用の数 1 つは別）
-- ログイン成功の直後、configuration の前に「`online < max` なら +1」を 1 回の compare-exchange で行う。取れなければ `Disconnect`（login 段階）で理由を出して切る。接続が終わるときの drop で -1
+- ログイン成功の直後、configuration の前に「`online < max` なら +1」を 1 回の compare-exchange で行う。取れなければ `Disconnect`（configuration 段階。`LoginFinished` を送った後なので login の Disconnect は使えない）で理由を出して切る。接続が終わるときの drop で -1
 - status は `StatusInfo` を問い合わせごとにカウンタから作る（`StatusInfo` の既存の説明どおり）。Instance の tick を待たない
 - 数えるのは**接続**。同じ UUID の再ログインで古い接続が残っている短い間は 2 と数える。満員のときはこの再ログインも断られる（古い接続が切れるのを待つ設計は取らない。D 番号なしの割り切りとして、ここに残す）
 

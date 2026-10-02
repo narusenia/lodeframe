@@ -122,6 +122,15 @@ impl<I: Instance> TestEnv<I> {
         }
     }
 
+    /// Tells the instance that `player`'s last keep alive took `rtt` to be answered, as the
+    /// connection does, for [`Ctx::ping`](crate::world::Ctx::ping).
+    pub fn ping(&mut self, player: &FakePlayer, rtt: std::time::Duration) {
+        self.instance.handle(Message::Latency {
+            player: player.uuid,
+            rtt,
+        });
+    }
+
     /// Joins a player called `name`. The instance has handled the join when this returns.
     pub fn connect(&mut self, name: &str) -> FakePlayer {
         let uuid = Uuid::offline(name);
