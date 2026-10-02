@@ -1,6 +1,6 @@
 # スケジューラ 実装計画（M2-05）
 
-> **Status**: 計画 — 2026-10-02
+> **Status**: 実装済み — 2026-10-02
 
 要件: REQ-API-006。決定: D6・D21・D31・D33（[decisions.md](../decisions.md)）。
 本体の単一 crate 内の変更（`schedule.rs` 新規・`world.rs`）で、設計ゲートの対象外だが、API の形が M2-17（エンティティごとのスケジューラ）と M2-26（カウントダウン）に効くので先に決める。
@@ -102,9 +102,9 @@ let id: TaskId = ..run(..);  ctx.cancel(id) -> bool
 - `World` を落とすと、タスクのクロージャが drop される（持ち主が消えたら止まる）
 - `mise run check`・`mise run msrv`
 
-## 実装の順
+## 実装の順（この順で入れた）
 
 1. `schedule.rs`: `Delay`・`Next`・`TaskId`・`Scheduler`（tick 数と `BTreeMap<(due, id), Task>`）・`Schedule`。`Ctx` に `after`・`cancel`
 2. `world.rs`: `Ctx` が `Scheduler` を持つ。`World::tick` の開始・終了で走らせ、`Ctx::leave` でプレイヤー持ちを消す
-3. 公開: facade から `Delay`・`Next`・`TaskId`・`Schedule` を re-export
+3. 公開: `lodeframe::schedule` に `Delay`・`Next`・`TaskId`・`Schedule`・`TICK`（本体が facade なので re-export は要らない）
 4. 文書: REQ-API-006 の受入条件、architecture（tick の順序とスケジューラ）、minestom-parity、backlog（M2-05 を ✅、Cooldown の残りを記す）、M2-03 の計画書の表、decisions（D34）

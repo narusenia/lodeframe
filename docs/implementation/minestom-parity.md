@@ -114,7 +114,7 @@
 | 3.33 | セクション無効化イベント | ⬜ | REQ-WORLD-006（v0.3） |
 | 3.34 | ブロックの補助（視線方向の走査・破壊時間の計算） | ⬜ | REQ-WORLD-015（v0.6） |
 | 3.35 | 座標 API | ✅ D23 | Area・ChunkRange 相当は使う REQ で足す |
-| 3.36 | Instance 単位の event / scheduler / 利用者データ | 🔶 event のみ | REQ-API-006・REQ-API-007（v0.2） |
+| 3.36 | Instance 単位の event / scheduler / 利用者データ | 🔶 event・scheduler | REQ-API-006・REQ-API-007（v0.2） |
 | 3.37 | hashed seed | 🔶 0 固定 | REQ-WORLD-007（v0.3） |
 | 3.x | 複数ディメンション（Respawn を伴う移送） | ⬜ overworld 固定 | REQ-WORLD-007（v0.3）。Minestom は DimensionType で持つ |
 
@@ -254,11 +254,11 @@
 
 | # | Minestom の機能 | lodeframe | 受け皿 |
 |---|---|---|---|
-| 8.1 | 全体のスケジューラ | ⬜ | REQ-API-006（v0.2） |
-| 8.2 | Instance・エンティティ・プレイヤー単位のスケジューラ | ⬜ | REQ-API-006（v0.2） |
-| 8.3 | 実行時期（次 tick・tick 数・時間・future 完了時・停止） | ⬜ | REQ-API-006（v0.2）。future は REQ-API-003 と同じ経路 |
-| 8.4 | tick の開始時か終了時か | ⬜ | REQ-API-006（v0.2） |
-| 8.5 | 次回を自分で決めるタスク | ⬜ | REQ-API-006（v0.2） |
+| 8.1 | 全体のスケジューラ | ✅ `ctx.after(..)`（D34） | — |
+| 8.2 | Instance・エンティティ・プレイヤー単位のスケジューラ | 🔶 Instance・プレイヤー（`for_player`） | エンティティは M2-17 |
+| 8.3 | 実行時期（次 tick・tick 数・時間・future 完了時・停止） | 🔶 次 tick・tick 数・時間（`Delay`）・停止（`cancel`）。future 完了時は `ctx.spawn(..).then(..)`（D33） | — |
+| 8.4 | tick の開始時か終了時か | ✅ `at_end` | — |
+| 8.5 | 次回を自分で決めるタスク | ✅ `Next::After` | — |
 | 8.6 | Executor として使う | 不要 | Instance スレッドへの投入は `ctx.spawn` の戻し（D16、実装済み: D33）で足りる |
 | 8.7 | シャットダウン時のタスク | ⬜ | REQ-NET-006（v0.2、停止処理と一緒に） |
 | 8.8 | tick レート・追いつきの上限の設定 | 🔶 20 TPS・2 秒で固定 | REQ-NET-006（v0.2） |
@@ -266,7 +266,7 @@
 | 8.10 | ThreadProvider | ⬜ | 別枠（D6、同上） |
 | 8.11 | Acquirable（別スレッドの物へ安全に触る） | 不要 | Instance 間は message passing のみ（D6）。所有は型が保証する |
 | 8.12 | クライアントの tick 速度制御 | ⬜ | REQ-UI-007（v0.7、Minestom も直送のみ） |
-| 8.13 | Cooldown 等の時間の補助 | ⬜ | REQ-API-006（v0.2） |
+| 8.13 | Cooldown 等の時間の補助 | ⬜ | REQ-API-006（v0.2）。M2-19（利用者データ）の後。D34 |
 
 ## 9. Adventure 統合
 
