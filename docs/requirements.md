@@ -586,7 +586,7 @@ Adventure 相当の層（D19）。Component と MiniMessage は `lodeframe-text`
 - **受入条件**
   - [x] ハンドラから DB 相当の非同期処理を投げても tick が遅延しない
   - [x] 結果コールバックでプレイヤーが退出済みの場合を扱える
-  - [ ] ログイン前の async イベントで、入室の拒否と UUID・名前の差し替えができる
+  - [x] ログイン前の async イベントで、入室の拒否と UUID・名前の差し替えができる（`Server::on_login`。複数登録でき、登録順に await する。拒否した接続は Instance に入らず、在線の枠も取らない。D42）
 
 ### REQ-API-004: コマンド
 

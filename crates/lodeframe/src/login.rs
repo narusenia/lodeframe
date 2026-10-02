@@ -3,7 +3,14 @@
 //! proxy forwardings, where a proxy says who the player is: Velocity modern forwarding signed
 //! with a shared secret, and BungeeCord legacy forwarding, which is not signed at all.
 
-use std::{io, net::IpAddr, time::Duration};
+use std::{
+    future::Future,
+    io,
+    net::{IpAddr, SocketAddr},
+    pin::Pin,
+    sync::Arc,
+    time::Duration,
+};
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -22,6 +29,7 @@ use crate::{
             LoginFinished, ProfileProperty,
         },
     },
+    text::Component,
 };
 
 /// Who logged in.
@@ -37,11 +45,131 @@ pub struct Profile {
     pub remote_addr: Option<IpAddr>,
 }
 
+/// A player about to join, as a login hook ([`Server::on_login`](crate::server::Server::on_login))
+/// sees them.
+///
+/// The hook owns it, so it can be held across an `await`. Change [`profile`](Self::profile) and
+/// [`allow`](Self::allow) to let the player in as someone else, or [`deny`](Self::deny) to turn
+/// them away.
+#[derive(Debug, Clone)]
+pub struct LoginAttempt {
+    /// Who the connection says the player is, after a proxy's forwarding has said it. What is
+    /// changed here and allowed is what the player becomes, and what the next hook sees.
+    pub profile: Profile,
+    /// The address the connection came from: the socket's peer, or the client a PROXY protocol
+    /// header named. Not what a proxy forwarded; that is [`Profile::remote_addr`].
+    pub peer: SocketAddr,
+}
+
+/// What a login hook says about a [`LoginAttempt`].
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum LoginDecision {
+    /// Let the player in as this profile.
+    Allow(Profile),
+    /// Turn the player away, telling them `reason`. Later hooks do not run.
+    Deny(Component),
+}
+
+impl LoginAttempt {
+    /// Lets the player in as [`profile`](Self::profile), as it is now.
+    pub fn allow(self) -> LoginDecision {
+        LoginDecision::Allow(self.profile)
+    }
+
+    /// Turns the player away, telling them `reason`.
+    pub fn deny(self, reason: impl Into<Component>) -> LoginDecision {
+        LoginDecision::Deny(reason.into())
+    }
+}
+
+/// A login hook, boxed.
+pub(crate) type LoginHook =
+    Arc<dyn Fn(LoginAttempt) -> Pin<Box<dyn Future<Output = LoginDecision> + Send>> + Send + Sync>;
+
+/// Runs `hooks` in order on `profile`, each seeing what the one before changed, until one turns
+/// the player away or `limit` has passed for all of them. `Err` is what the player is told.
+///
+/// What comes out is checked: a hook is the user's code, and its profile is about to be sent.
+pub(crate) async fn decide(
+    hooks: &[LoginHook],
+    profile: Profile,
+    peer: SocketAddr,
+    limit: Duration,
+) -> std::result::Result<Profile, Component> {
+    if hooks.is_empty() {
+        return Ok(profile);
+    }
+    let run = async {
+        let mut profile = profile;
+        for hook in hooks {
+            match hook(LoginAttempt { profile, peer }).await {
+                LoginDecision::Allow(allowed) => profile = allowed,
+                LoginDecision::Deny(reason) => return Err(reason),
+            }
+        }
+        Ok(profile)
+    };
+    let profile = match timeout(limit, run).await {
+        Ok(decided) => decided?,
+        Err(_) => {
+            tracing::warn!("a login hook took longer than {limit:?}");
+            return Err(Component::text("Login timed out"));
+        }
+    };
+    if let Err(why) = check(&profile) {
+        tracing::error!(name = %profile.name, "a login hook returned a profile that cannot be used: {why}");
+        return Err(Component::text(NOT_VERIFIED));
+    }
+    Ok(profile)
+}
+
+/// What a profile that is sent to the client has to satisfy.
+fn check(profile: &Profile) -> std::result::Result<(), &'static str> {
+    if profile.name.is_empty() || profile.name.chars().count() > MAX_NAME {
+        return Err("the name must have 1 to 16 characters");
+    }
+    if profile.properties.len() > MAX_PROPERTIES {
+        return Err("too many properties");
+    }
+    let too_long = |s: &str, max: usize| s.encode_utf16().count() > max;
+    for p in &profile.properties {
+        if too_long(&p.name, MAX_PROPERTY_NAME)
+            || too_long(&p.value, MAX_PROPERTY_VALUE)
+            || p.signature
+                .as_deref()
+                .is_some_and(|s| too_long(s, MAX_PROPERTY_SIGNATURE))
+        {
+            return Err("a property is too long");
+        }
+    }
+    Ok(())
+}
+
+/// Tells the client `reason` and ends the login, which is no error: the player was turned away.
+pub(crate) async fn turn_away<S: AsyncRead + AsyncWrite + Unpin>(
+    conn: &mut Connection<S>,
+    reason: &Component,
+) -> Result<()> {
+    conn.write_packet(&Disconnect {
+        reason: reason.to_json(),
+    })
+    .await
+}
+
 /// Runs offline login on a connection in [`State::Login`] and leaves it in
 /// [`State::Configuration`].
 ///
 /// With `compression_threshold` set, compression is turned on before the profile is sent.
 pub async fn offline<S: AsyncRead + AsyncWrite + Unpin>(
+    conn: &mut Connection<S>,
+    compression_threshold: Option<usize>,
+) -> Result<Profile> {
+    let profile = identify_offline(conn, compression_threshold).await?;
+    finish(conn, profile).await
+}
+
+async fn identify_offline<S: AsyncRead + AsyncWrite + Unpin>(
     conn: &mut Connection<S>,
     compression_threshold: Option<usize>,
 ) -> Result<Profile> {
@@ -53,23 +181,12 @@ pub async fn offline<S: AsyncRead + AsyncWrite + Unpin>(
         return Err(Error::InvalidValue("player name length"));
     }
     compress(conn, compression_threshold).await?;
-    let profile = Profile {
+    Ok(Profile {
         uuid: Uuid::offline(&hello.name),
         name: hello.name,
         properties: Vec::new(),
         remote_addr: None,
-    };
-    conn.write_packet(&LoginFinished {
-        uuid: profile.uuid,
-        name: profile.name.clone(),
-        properties: Vec::new(),
-        // ponytail: offline has no session service; reuse the profile UUID as the session id
-        session_id: profile.uuid,
     })
-    .await?;
-    conn.read_packet::<LoginAcknowledged>().await?;
-    conn.set_state(State::Configuration);
-    Ok(profile)
 }
 
 /// Asks the client things on channels of the server's own while it logs in, the way a proxy
@@ -146,6 +263,16 @@ pub async fn velocity<S: AsyncRead + AsyncWrite + Unpin>(
     secret: &[u8],
     limit: Duration,
 ) -> Result<Profile> {
+    let profile = identify_velocity(conn, compression_threshold, secret, limit).await?;
+    finish(conn, profile).await
+}
+
+async fn identify_velocity<S: AsyncRead + AsyncWrite + Unpin>(
+    conn: &mut Connection<S>,
+    compression_threshold: Option<usize>,
+    secret: &[u8],
+    limit: Duration,
+) -> Result<Profile> {
     if conn.state() != State::Login {
         return Err(Error::InvalidValue("not in the login state"));
     }
@@ -168,7 +295,7 @@ pub async fn velocity<S: AsyncRead + AsyncWrite + Unpin>(
         Ok(profile) => profile,
         Err(why) => return refuse(conn, NOT_VERIFIED, why).await,
     };
-    finish(conn, profile).await
+    Ok(profile)
 }
 
 /// Turns compression on when asked, before the profile is sent.
@@ -189,7 +316,8 @@ async fn compress<S: AsyncRead + AsyncWrite + Unpin>(
 }
 
 /// Accepts `profile`, waits for the client to acknowledge and moves to configuration.
-async fn finish<S: AsyncRead + AsyncWrite + Unpin>(
+// ponytail: no session service; the profile UUID doubles as the session id
+pub(crate) async fn finish<S: AsyncRead + AsyncWrite + Unpin>(
     conn: &mut Connection<S>,
     profile: Profile,
 ) -> Result<Profile> {
@@ -203,6 +331,57 @@ async fn finish<S: AsyncRead + AsyncWrite + Unpin>(
     conn.read_packet::<LoginAcknowledged>().await?;
     conn.set_state(State::Configuration);
     Ok(profile)
+}
+
+/// How a connection says who the player is, for [`identify`].
+pub(crate) enum Identity<'a> {
+    Offline,
+    Velocity {
+        secret: &'a [u8],
+        limit: Duration,
+    },
+    BungeeCord {
+        address: &'a str,
+        peer: IpAddr,
+        trusted: &'a [IpAddr],
+    },
+    BungeeGuard {
+        address: &'a str,
+        tokens: &'a [String],
+    },
+}
+
+/// The first half of a login: reads the client's hello and works out who the player is, the way
+/// `identity` says, and stops before the player is told anything of it. What the public
+/// functions of this module do is this and then [`finish`]; a server that wants to look at the
+/// profile in between does them itself.
+pub(crate) async fn identify<S: AsyncRead + AsyncWrite + Unpin>(
+    conn: &mut Connection<S>,
+    compression_threshold: Option<usize>,
+    identity: Identity<'_>,
+) -> Result<Profile> {
+    match identity {
+        Identity::Offline => identify_offline(conn, compression_threshold).await,
+        Identity::Velocity { secret, limit } => {
+            identify_velocity(conn, compression_threshold, secret, limit).await
+        }
+        Identity::BungeeCord {
+            address,
+            peer,
+            trusted,
+        } => {
+            identify_legacy(
+                conn,
+                compression_threshold,
+                address,
+                Trust::Peer { peer, trusted },
+            )
+            .await
+        }
+        Identity::BungeeGuard { address, tokens } => {
+            identify_legacy(conn, compression_threshold, address, Trust::Tokens(tokens)).await
+        }
+    }
 }
 
 /// Tells the client `reason` and ends the login with an error that says `why` in the log.
@@ -236,13 +415,14 @@ pub async fn bungeecord<S: AsyncRead + AsyncWrite + Unpin>(
     peer: IpAddr,
     trusted: &[IpAddr],
 ) -> Result<Profile> {
-    legacy(
+    let profile = identify_legacy(
         conn,
         compression_threshold,
         address,
         Trust::Peer { peer, trusted },
     )
-    .await
+    .await?;
+    finish(conn, profile).await
 }
 
 /// Runs BungeeCord legacy forwarding with BungeeGuard on a connection in [`State::Login`] and
@@ -256,7 +436,9 @@ pub async fn bungeeguard<S: AsyncRead + AsyncWrite + Unpin>(
     address: &str,
     tokens: &[String],
 ) -> Result<Profile> {
-    legacy(conn, compression_threshold, address, Trust::Tokens(tokens)).await
+    let profile =
+        identify_legacy(conn, compression_threshold, address, Trust::Tokens(tokens)).await?;
+    finish(conn, profile).await
 }
 
 /// What makes a legacy forwarding believable.
@@ -265,7 +447,7 @@ enum Trust<'a> {
     Tokens(&'a [String]),
 }
 
-async fn legacy<S: AsyncRead + AsyncWrite + Unpin>(
+async fn identify_legacy<S: AsyncRead + AsyncWrite + Unpin>(
     conn: &mut Connection<S>,
     compression_threshold: Option<usize>,
     address: &str,
@@ -316,16 +498,12 @@ async fn legacy<S: AsyncRead + AsyncWrite + Unpin>(
         )
         .await;
     }
-    finish(
-        conn,
-        Profile {
-            uuid,
-            name: hello.name,
-            properties,
-            remote_addr: Some(remote_addr),
-        },
-    )
-    .await
+    Ok(Profile {
+        uuid,
+        name: hello.name,
+        properties,
+        remote_addr: Some(remote_addr),
+    })
 }
 
 /// Reads `host\0ip\0uuid[\0properties]`, the server address a BungeeCord proxy writes.

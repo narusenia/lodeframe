@@ -1,6 +1,6 @@
 # ログイン前の async イベント実装計画（M2-04）
 
-> **Status**: 計画 — 2026-10-03
+> **Status**: 実装済み — 2026-10-03
 
 要件: REQ-API-003（ログイン前の項目）。決定: D16・D21・D31・D38・D39・D40・D41・D42（[decisions.md](../decisions.md)）。
 `lodeframe`（本体）と `lodeframe-text` にまたがり、login の内部を組み替えるので、コードの前にここで形を決める。M2-07（D38）が「login の利用者向けフックは M2-04」と預けた分。

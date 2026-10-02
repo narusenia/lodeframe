@@ -96,6 +96,49 @@ impl Component {
     }
 }
 
+impl Component {
+    /// The component as JSON text, which is how a few packets (a refusal while logging in) carry
+    /// it: `{"text":"..","color":"red","bold":true}`, with only the style that is set.
+    pub fn to_json(&self) -> String {
+        let mut json = String::from("{\"text\":");
+        push_json_string(&mut json, &self.text);
+        if let Some(color) = self.style.color {
+            json.push_str(&format!(",\"color\":\"{color}\""));
+        }
+        let decorations = [
+            ("bold", self.style.bold),
+            ("italic", self.style.italic),
+            ("underlined", self.style.underlined),
+            ("strikethrough", self.style.strikethrough),
+            ("obfuscated", self.style.obfuscated),
+        ];
+        for (name, value) in decorations {
+            if let Some(value) = value {
+                json.push_str(&format!(",\"{name}\":{value}"));
+            }
+        }
+        json.push('}');
+        json
+    }
+}
+
+/// Appends `s` as a JSON string: quoted, with `"`, `\` and control characters escaped.
+fn push_json_string(json: &mut String, s: &str) {
+    json.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => json.push_str("\\\""),
+            '\\' => json.push_str("\\\\"),
+            '\n' => json.push_str("\\n"),
+            '\r' => json.push_str("\\r"),
+            '\t' => json.push_str("\\t"),
+            c if c < ' ' => json.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => json.push(c),
+        }
+    }
+    json.push('"');
+}
+
 impl From<&str> for Component {
     fn from(text: &str) -> Self {
         Self::text(text)
@@ -161,6 +204,44 @@ impl fmt::Display for Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn to_json_writes_the_text_and_only_the_style_that_is_set() {
+        assert_eq!(Component::text("hi").to_json(), r#"{"text":"hi"}"#);
+        assert_eq!(
+            Component::text("hi")
+                .color(Color::Red)
+                .bold()
+                .underlined()
+                .to_json(),
+            r##"{"text":"hi","color":"red","bold":true,"underlined":true}"##
+        );
+        assert_eq!(
+            Component::text("x").color(Color::Rgb(1, 2, 3)).to_json(),
+            r##"{"text":"x","color":"#010203"}"##
+        );
+        let mut c = Component::text("x");
+        c.style.italic = Some(false);
+        c.style.strikethrough = Some(true);
+        c.style.obfuscated = Some(true);
+        assert_eq!(
+            c.to_json(),
+            r#"{"text":"x","italic":false,"strikethrough":true,"obfuscated":true}"#
+        );
+    }
+
+    #[test]
+    fn to_json_escapes_what_json_needs() {
+        assert_eq!(
+            Component::text("a\"b\\c\nd\te\r\u{1}\u{1f}").to_json(),
+            r#"{"text":"a\"b\\c\nd\te\r\u0001\u001f"}"#
+        );
+        // everything else stays as it is
+        assert_eq!(
+            Component::text("日本語 §c").to_json(),
+            r#"{"text":"日本語 §c"}"#
+        );
+    }
 
     #[test]
     fn color_displays_the_game_name() {
