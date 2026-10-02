@@ -7,17 +7,22 @@ use lodeframe::{
     data::Key,
     event::{Event, EventNode, Listener},
     instance::PluginMessage,
+    login::Profile,
     protocol::{
-        BlockPos, Direction, Encode, VarInt, Vec3,
+        BlockPos, Direction, Encode, Uuid, VarInt, Vec3,
         block::{AIR, COBBLESTONE, STONE},
         chunk::LevelChunkWithLight,
         ids::play::{clientbound as out, serverbound},
-        packets::play::{
-            AddEntity, BlockChangedAck, BlockUpdate, Chat, ChunkBatchFinished, DisguisedChat,
-            EntityPositionSync, FLAG_SNEAKING, ForgetLevelChunk, INPUT_SNEAK, Login, MoveEntityPos,
-            MoveEntityPosRot, MovePlayerPos, MovePlayerPosRot, MovePlayerRot, PlayerAction,
-            PlayerInfoAdd, PlayerInfoRemove, PlayerInput, PlayerPosition, RemoveEntities,
-            RotateHead, SetChunkCacheCenter, SetEntityFlagsAndPose, SystemChat, UseItemOn,
+        packets::{
+            login::ProfileProperty,
+            play::{
+                AddEntity, BlockChangedAck, BlockUpdate, Chat, ChunkBatchFinished, DisguisedChat,
+                EntityPositionSync, FLAG_SNEAKING, ForgetLevelChunk, INPUT_SNEAK, Login,
+                MoveEntityPos, MoveEntityPosRot, MovePlayerPos, MovePlayerPosRot, MovePlayerRot,
+                PlayerAction, PlayerInfoAdd, PlayerInfoRemove, PlayerInput, PlayerPosition,
+                RemoveEntities, RotateHead, SetChunkCacheCenter, SetEntityFlagsAndPose, SystemChat,
+                UseItemOn,
+            },
         },
     },
     registry::Registries,
@@ -2493,4 +2498,79 @@ fn a_player_without_a_brand_has_none() {
     // bytes that are no string are no brand
     let id = env.instance().player_id(alex.uuid()).unwrap();
     assert_eq!(env.instance().client_brand(id), None);
+}
+
+fn skin() -> ProfileProperty {
+    ProfileProperty {
+        name: "textures".into(),
+        value: "dGV4dHVyZXM=".into(),
+        signature: Some("c2lnbmVk".into()),
+    }
+}
+
+fn forwarded(name: &str, uuid: u128) -> Profile {
+    Profile {
+        uuid: Uuid(uuid),
+        name: name.into(),
+        properties: vec![skin()],
+        remote_addr: Some("203.0.113.7".parse().unwrap()),
+    }
+}
+
+#[test]
+fn what_a_proxy_forwarded_is_known_and_in_the_tab_list() {
+    let mut env = env();
+    let mut steve = env.connect_as(forwarded("Steve", 7), Vec::new());
+
+    let id = env.instance().player_id(steve.uuid()).unwrap();
+    assert_eq!(env.instance().profile_properties(id), [skin()]);
+    assert_eq!(
+        env.instance().remote_addr(id),
+        Some("203.0.113.7".parse().unwrap())
+    );
+    // the skin is in the player's own list entry, and the player is the one in the list
+    let list = steve.drain_as::<PlayerInfoAdd>();
+    assert_eq!(list[0].players[0].uuid, Uuid(7));
+    assert_eq!(list[0].players[0].properties, [skin()]);
+}
+
+#[test]
+fn the_skin_reaches_the_players_who_were_there_and_the_ones_who_come() {
+    let mut env = env();
+    let mut steve = env.connect("Steve");
+    steve.drain();
+    let mut alex = env.connect_as(forwarded("Alex", 8), Vec::new());
+
+    // Steve hears of Alex with the skin; Alex hears of Steve without one
+    let heard = steve.drain_as::<PlayerInfoAdd>();
+    assert_eq!(heard[0].players[0].properties, [skin()]);
+    let list = alex.drain_as::<PlayerInfoAdd>();
+    assert_eq!(names(&list), ["Steve", "Alex"]);
+    assert!(list[0].players[0].properties.is_empty());
+    assert_eq!(list[0].players[1].properties, [skin()]);
+
+    // a third player gets Alex's skin in the list that is sent to them
+    let mut zed = env.connect("Zed");
+    let list = zed.drain_as::<PlayerInfoAdd>();
+    let alex_entry = list[0].players.iter().find(|p| p.name == "Alex").unwrap();
+    assert_eq!(alex_entry.properties, [skin()]);
+}
+
+#[test]
+fn a_player_without_a_proxy_has_no_forwarded_address_or_skin() {
+    let mut env = env();
+    let steve = env.connect("Steve");
+    let id = env.instance().player_id(steve.uuid()).unwrap();
+    assert_eq!(env.instance().remote_addr(id), None);
+    assert!(env.instance().profile_properties(id).is_empty());
+}
+
+#[test]
+fn a_player_who_left_has_no_forwarded_address_or_skin() {
+    let mut env = env();
+    let steve = env.connect_as(forwarded("Steve", 7), Vec::new());
+    let id = env.instance().player_id(steve.uuid()).unwrap();
+    env.disconnect(steve);
+    assert_eq!(env.instance().remote_addr(id), None);
+    assert!(env.instance().profile_properties(id).is_empty());
 }

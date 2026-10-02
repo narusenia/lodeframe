@@ -31,7 +31,7 @@
 | 1.3 | 圧縮しきい値の設定 | ✅ `Server::compression_threshold`（既定 256） | — |
 | 1.4 | online mode（Mojang 認証・暗号化・認証 URL の差し替え・proxy 接続の拒否） | ⬜ | REQ-AUTH-002（v0.3） |
 | 1.5 | offline mode | ✅ | — |
-| 1.6 | Velocity modern forwarding | ⬜ | REQ-AUTH-001（v0.2） |
+| 1.6 | Velocity modern forwarding | ✅ `Server::forwarding(Forwarding::Velocity { secret })`。スキンはタブリスト、接続元は `ctx.remote_addr`（実 Velocity 4.2.0 で UUID・名前・接続元・秘密違いの拒否を確認。skin 付きは未確認） | — |
 | 1.7 | BungeeCord / BungeeGuard 転送 | ⬜ | REQ-AUTH-003（v0.2） |
 | 1.8 | HAProxy PROXY protocol v1/v2（任意・必須） | ⬜ | REQ-NET-004（v0.2） |
 | 1.9 | login 段階の plugin message（タイムアウト付き） | 🔶 `login::Queries::ask`（D38）。利用者向けのフックは無い | フックは M2-04（pre-login の async イベント） |
@@ -291,7 +291,7 @@
 | 10.4 | tick の監視イベント | 🔶 `TickStats` を取れるのみ | REQ-OPS-001（v0.8） |
 | 10.5 | 例外ハンドラ | ⬜ ハンドラの panic で Instance のスレッドが止まる | REQ-OPS-003（v0.3） |
 | 10.6 | シャットダウン（シグナルで止める） | ✅ `Server::run` が Ctrl-C で `shutdown`（D37） | — |
-| 10.7 | 設定項目（約 60） | 🔶 motd・brand・REQ-NET-006 の 7 項目 | 項目ごとの REQ（proxy 系は M2-08〜10 が同じ入り口に足す） |
+| 10.7 | 設定項目（約 60） | 🔶 motd・brand・REQ-NET-006 の 7 項目・`forwarding`（Velocity）・`forwarding_timeout` | 項目ごとの REQ（proxy 系の BungeeCord・HAProxy は M2-09・10 が同じ入り口に足す） |
 | 10.8 | Mojang プロフィールの取得・署名の検証 | ⬜ | REQ-PLAYER-003（v0.3） |
 | 10.9 | プロセスの作り直し | 不要 | `Server` を作り直せば足りる（グローバルな状態を持たない、D6） |
 | 10.10 | テスト支援 | ✅ `test-util`（D21） | — |

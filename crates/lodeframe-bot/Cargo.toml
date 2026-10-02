@@ -13,5 +13,7 @@ workspace = true
 [dependencies]
 lodeframe-protocol.workspace = true
 tokio = { workspace = true, features = ["net", "io-util", "time", "rt-multi-thread", "macros"] }
+hmac.workspace = true
+sha2.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

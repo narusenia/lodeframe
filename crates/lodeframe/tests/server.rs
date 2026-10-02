@@ -9,16 +9,17 @@ use lodeframe::{
         FrameDecoder, Identifier, VarInt, encode_frame, packet_body,
         packets::{
             handshake::Intention,
-            play::{ClientboundCustomPayload, Disconnect},
+            login::ProfileProperty,
+            play::{ClientboundCustomPayload, Disconnect, PlayerInfoAdd},
             status::{StatusRequest, StatusResponse},
         },
         split_packet_id,
     },
     registry::Registries,
-    server::{RunningServer, Server},
+    server::{Forwarding, RunningServer, Server},
     world::{Ctx, PlayerJoinEvent, PluginMessageEvent, World},
 };
-use lodeframe_bot::Bot;
+use lodeframe_bot::{Bot, Velocity};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -311,4 +312,147 @@ async fn the_server_calls_itself_lodeframe_unless_told_otherwise() {
         assert_eq!(bot.server_brand(), Some(expected));
         server.stop();
     }
+}
+
+const SECRET: &[u8] = b"a shared secret";
+
+fn skin() -> ProfileProperty {
+    ProfileProperty {
+        name: "textures".into(),
+        value: "dGV4dHVyZXM=".into(),
+        signature: Some("c2lnbmVk".into()),
+    }
+}
+
+/// A server behind a proxy that signs with `SECRET`; it tells every player who joins the address
+/// and the skin it knows them by, on `test:who`.
+async fn start_behind_proxy() -> RunningServer {
+    Server::new("127.0.0.1:0")
+        .forwarding(Forwarding::Velocity {
+            secret: SECRET.to_vec(),
+        })
+        .forwarding_timeout(Duration::from_millis(300))
+        .start(|registries: &Registries| {
+            let mut world = World::new(registries, FlatGenerator::default());
+            world.view_distance = 2;
+            world
+                .events_mut()
+                .on(|e: &mut PlayerJoinEvent, ctx: &mut Ctx| {
+                    let who = format!(
+                        "{:?} {}",
+                        ctx.remote_addr(e.player),
+                        ctx.profile_properties(e.player).len()
+                    );
+                    let channel = Identifier::new("test:who").unwrap();
+                    ctx.send_plugin_message(e.player, &channel, who.as_bytes());
+                });
+            world
+        })
+        .await
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bot_behind_a_proxy_joins_as_the_player_the_proxy_names() {
+    let server = start_behind_proxy().await;
+    let mut proxy = Velocity::new(SECRET, lodeframe::protocol::Uuid(0xabcd));
+    proxy.address = "198.51.100.9".into();
+    proxy.properties = vec![skin()];
+
+    let mut steve = Bot::connect_behind(server.addr(), "Steve", proxy.clone())
+        .await
+        .unwrap();
+    assert_eq!(steve.uuid(), lodeframe::protocol::Uuid(0xabcd));
+    let limit = Duration::from_secs(10);
+    let told = steve
+        .recv_until(limit, |frame| {
+            let message = frame.decode::<ClientboundCustomPayload>().ok()?;
+            (frame.is::<ClientboundCustomPayload>() && message.channel.as_str() == "test:who")
+                .then_some(message.data)
+        })
+        .await
+        .unwrap();
+    assert_eq!(told, b"Some(198.51.100.9) 1");
+
+    // the next player sees the skin in the tab list
+    let mut alex = Bot::connect_behind(
+        server.addr(),
+        "Alex",
+        Velocity::new(SECRET, lodeframe::protocol::Uuid(0x1111)),
+    )
+    .await
+    .unwrap();
+    let skins = alex
+        .recv_until(limit, |frame| {
+            let list = frame.decode::<PlayerInfoAdd>().ok()?;
+            let steve = list.players.into_iter().find(|p| p.name == "Steve")?;
+            frame.is::<PlayerInfoAdd>().then_some(steve.properties)
+        })
+        .await
+        .unwrap();
+    assert_eq!(skins, [skin()]);
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_proxy_with_another_secret_is_turned_away() {
+    let server = start_behind_proxy().await;
+    let proxy = Velocity::new(&b"not the secret"[..], lodeframe::protocol::Uuid(1));
+
+    let result = Bot::connect_behind(server.addr(), "Steve", proxy).await;
+
+    assert!(result.is_err());
+    wait_for_online(&server, 0).await;
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_proxy_that_answers_in_another_version_is_turned_away() {
+    let server = start_behind_proxy().await;
+    let mut proxy = Velocity::new(SECRET, lodeframe::protocol::Uuid(1));
+    proxy.version = 4;
+
+    assert!(
+        Bot::connect_behind(server.addr(), "Steve", proxy)
+            .await
+            .is_err()
+    );
+    wait_for_online(&server, 0).await;
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_comes_without_the_proxy_is_turned_away() {
+    let server = start_behind_proxy().await;
+
+    // a bot that does not play a proxy gets the query and does not know what to do with it
+    assert!(Bot::connect(server.addr(), "Steve").await.is_err());
+    wait_for_online(&server, 0).await;
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_forwarding_a_proxy_bot_is_not_asked_and_joins_as_it_is() {
+    let server = start_with(|server| server).await;
+
+    // nobody asks, so the bot's answer is never needed and its own name decides the UUID
+    let bot = Bot::connect_behind(
+        server.addr(),
+        "Steve",
+        Velocity::new(SECRET, lodeframe::protocol::Uuid(5)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(bot.uuid(), lodeframe::protocol::Uuid(5));
+    server.stop();
+}
+
+#[tokio::test]
+async fn an_empty_secret_does_not_start() {
+    let result = Server::new("127.0.0.1:0")
+        .forwarding(Forwarding::Velocity { secret: Vec::new() })
+        .start(|registries: &Registries| World::new(registries, FlatGenerator::default()))
+        .await;
+
+    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
 }

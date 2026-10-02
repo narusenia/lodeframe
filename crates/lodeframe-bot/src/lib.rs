@@ -10,6 +10,9 @@
 
 use std::{io, time::Duration};
 
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+
 use lodeframe_protocol::{
     BlockPos, Decode, Direction, Encode, FrameDecoder, Identifier, Nbt, PROTOCOL_VERSION, Packet,
     Uuid, VERSION_NAME, VarInt, Vec3, encode_frame, ids, packet_body,
@@ -19,7 +22,10 @@ use lodeframe_protocol::{
             FinishConfiguration, ServerboundCustomPayload, ServerboundKnownPacks,
         },
         handshake::Intention,
-        login::{Hello, LoginAcknowledged, LoginCompression, LoginFinished},
+        login::{
+            CustomQuery, CustomQueryAnswer, Hello, LoginAcknowledged, LoginCompression,
+            LoginFinished, ProfileProperty,
+        },
         play::{
             ACTION_START_DESTROY_BLOCK, Chat, KeepAlive, KeepAliveResponse, Login, MovePlayerPos,
             ON_GROUND, PlayerAction, PlayerPosition, UseItemOn,
@@ -40,6 +46,59 @@ const JOIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The brand that bots report to the server, see [`Bot::login`].
 pub const BRAND: &str = "lodeframe-bot";
+
+/// The channel a Velocity proxy asks the player's identity on.
+pub const VELOCITY_CHANNEL: &str = "velocity:player_info";
+
+/// A Velocity proxy that the bot plays: it answers the server's forwarding query the way the
+/// proxy does, so a server behind a proxy can be tested without one. Written here from the
+/// proxy's side of the protocol, not with the server's code, so that it checks that code.
+///
+/// Give it to [`Bot::connect_behind`] or [`Bot::login_behind`]. The fields can be bent to make
+/// a proxy that does it wrong.
+#[derive(Debug, Clone)]
+pub struct Velocity {
+    /// The secret the proxy signs with. A server with another one refuses the bot.
+    pub secret: Vec<u8>,
+    /// The UUID the proxy says the player has.
+    pub uuid: Uuid,
+    /// The address the proxy says the player connected from.
+    pub address: String,
+    /// The skin and the like the proxy forwards.
+    pub properties: Vec<ProfileProperty>,
+    /// The forwarding version the proxy answers in; the server asks for 1.
+    pub version: i32,
+}
+
+impl Velocity {
+    /// A proxy that signs with `secret` and forwards a player with `uuid`, from 127.0.0.1,
+    /// without a skin.
+    pub fn new(secret: impl Into<Vec<u8>>, uuid: Uuid) -> Self {
+        Self {
+            secret: secret.into(),
+            uuid,
+            address: "127.0.0.1".into(),
+            properties: Vec::new(),
+            version: 1,
+        }
+    }
+
+    /// What the proxy answers for a player called `name`: the signature, then the data it signs.
+    fn answer(&self, name: &str) -> Result<Vec<u8>> {
+        let mut body = Vec::new();
+        VarInt(self.version).encode(&mut body)?;
+        self.address.encode(&mut body)?;
+        self.uuid.encode(&mut body)?;
+        name.encode(&mut body)?;
+        self.properties.encode(&mut body)?;
+        let mut mac = Hmac::<Sha256>::new_from_slice(&self.secret)
+            .map_err(|_| Error::InvalidValue("secret"))?;
+        mac.update(&body);
+        let mut answer = mac.finalize().into_bytes().to_vec();
+        answer.extend(body);
+        Ok(answer)
+    }
+}
 
 /// One packet the server sent: its id and the bytes after it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,29 +235,54 @@ impl Bot<TcpStream> {
     }
 }
 
+impl Bot<TcpStream> {
+    /// Like [`connect`](Self::connect), behind the Velocity proxy `proxy`.
+    pub async fn connect_behind(
+        addr: impl ToSocketAddrs,
+        name: &str,
+        proxy: Velocity,
+    ) -> Result<Self> {
+        let stream = TcpStream::connect(addr).await?;
+        stream.set_nodelay(true)?;
+        Self::login_behind(stream, name, proxy).await
+    }
+}
+
 impl<S: AsyncRead + AsyncWrite + Unpin> Bot<S> {
     /// Logs in as `name` over `stream`: handshake, login, configuration, and the first packets
     /// of the play state. Gives up after 30 seconds.
     pub async fn login(stream: S, name: &str) -> Result<Self> {
+        Self::log_in(stream, name, None).await
+    }
+
+    /// Like [`login`](Self::login), behind the Velocity proxy `proxy`: the server's forwarding
+    /// query is answered, and the bot takes the proxy's UUID.
+    pub async fn login_behind(stream: S, name: &str, proxy: Velocity) -> Result<Self> {
+        Self::log_in(stream, name, Some(proxy)).await
+    }
+
+    async fn log_in(stream: S, name: &str, proxy: Option<Velocity>) -> Result<Self> {
         let mut bot = Self {
             stream,
             decoder: FrameDecoder::new(),
             threshold: None,
             name: name.into(),
-            uuid: Uuid::offline(name),
+            uuid: proxy
+                .as_ref()
+                .map_or_else(|| Uuid::offline(name), |p| p.uuid),
             entity_id: 0,
             position: Vec3::ZERO,
             sequence: 0,
             received: 0,
             brand: None,
         };
-        timeout(JOIN_TIMEOUT, bot.join())
+        timeout(JOIN_TIMEOUT, bot.join(proxy.as_ref()))
             .await
             .map_err(|_| Error::from(io::Error::from(io::ErrorKind::TimedOut)))??;
         Ok(bot)
     }
 
-    async fn join(&mut self) -> Result<()> {
+    async fn join(&mut self, proxy: Option<&Velocity>) -> Result<()> {
         self.send(&Intention {
             protocol_version: VarInt(PROTOCOL_VERSION),
             server_address: "localhost".into(),
@@ -218,6 +302,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Bot<S> {
                     usize::try_from(frame.decode::<LoginCompression>()?.threshold.0).ok();
                 self.threshold = threshold;
                 self.decoder.set_compression(threshold.is_some());
+            } else if let (true, Some(proxy)) = (frame.is::<CustomQuery>(), proxy) {
+                let query = frame.decode::<CustomQuery>()?;
+                if query.channel != Identifier::new(VELOCITY_CHANNEL)? {
+                    return Err(Error::InvalidValue("query on another channel"));
+                }
+                self.send(&CustomQueryAnswer {
+                    transaction_id: query.transaction_id,
+                    data: Some(proxy.answer(&self.name)?),
+                })
+                .await?;
             } else if frame.is::<LoginFinished>() {
                 self.send(&LoginAcknowledged).await?;
                 // as the game does, before the server has asked for anything

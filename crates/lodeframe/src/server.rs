@@ -50,6 +50,39 @@ const TICKS_PER_SECOND: u32 = 20;
 /// How long [`RunningServer::shutdown`] waits, unless [`Server::shutdown_timeout`] says otherwise.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long [`Server::forwarding_timeout`] waits for a proxy to answer, unless it says otherwise.
+const FORWARDING_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Whether a proxy sits in front of the server, and how it says who the players are.
+///
+/// Set with [`Server::forwarding`]. Behind a proxy, only let the proxy reach the server (a
+/// firewall, or a bind address that is not public): the secret proves who is talking to the
+/// server, not who is allowed to try.
+#[derive(Clone, Default)]
+#[non_exhaustive]
+pub enum Forwarding {
+    /// No proxy. Players are who they say they are, and their UUID comes from the name
+    /// (offline mode).
+    #[default]
+    None,
+    /// Velocity modern forwarding. `secret` is the proxy's `forwarding.secret`, and must not be
+    /// empty: anyone could sign with an empty key.
+    Velocity {
+        /// The secret shared with the proxy.
+        secret: Vec<u8>,
+    },
+}
+
+impl std::fmt::Debug for Forwarding {
+    // the secret stays out of logs
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => f.write_str("None"),
+            Self::Velocity { .. } => f.write_str("Velocity { secret: .. }"),
+        }
+    }
+}
+
 /// What a server is called and where it listens. Start it with [`run`](Self::run) or
 /// [`start`](Self::start).
 #[derive(Debug, Clone)]
@@ -66,6 +99,8 @@ pub struct Server {
     nodelay: bool,
     handle_ctrl_c: bool,
     shutdown_timeout: Duration,
+    forwarding: Forwarding,
+    forwarding_timeout: Duration,
 }
 
 impl Server {
@@ -85,6 +120,8 @@ impl Server {
             nodelay: false,
             handle_ctrl_c: true,
             shutdown_timeout: SHUTDOWN_TIMEOUT,
+            forwarding: Forwarding::None,
+            forwarding_timeout: FORWARDING_TIMEOUT,
         }
     }
 
@@ -169,6 +206,20 @@ impl Server {
         self
     }
 
+    /// Puts the server behind a proxy, which says who the players are; see [`Forwarding`]. The
+    /// default is no proxy.
+    pub fn forwarding(mut self, forwarding: Forwarding) -> Self {
+        self.forwarding = forwarding;
+        self
+    }
+
+    /// How long a login waits for the proxy to answer with who the player is, before it turns
+    /// the client away. The default is 5 seconds.
+    pub fn forwarding_timeout(mut self, timeout: Duration) -> Self {
+        self.forwarding_timeout = timeout;
+        self
+    }
+
     /// Checks the settings that cannot work, before anything starts.
     fn validate(&self) -> io::Result<()> {
         let invalid =
@@ -181,6 +232,9 @@ impl Server {
         }
         if self.keep_alive.timeout <= self.keep_alive.interval {
             return invalid("the keep alive timeout must be longer than its interval");
+        }
+        if matches!(&self.forwarding, Forwarding::Velocity { secret } if secret.is_empty()) {
+            return invalid("the forwarding secret must not be empty");
         }
         Ok(())
     }
@@ -268,8 +322,19 @@ impl Server {
                             info.max_players = options.max_players;
                             return status::respond(&mut conn, &info).await;
                         }
-                        let profile =
-                            login::offline(&mut conn, Some(options.compression_threshold)).await?;
+                        let threshold = Some(options.compression_threshold);
+                        let profile = match &options.forwarding {
+                            Forwarding::None => login::offline(&mut conn, threshold).await?,
+                            Forwarding::Velocity { secret } => {
+                                login::velocity(
+                                    &mut conn,
+                                    threshold,
+                                    secret,
+                                    options.forwarding_timeout,
+                                )
+                                .await?
+                            }
+                        };
                         let Some(_slot) = slots.take() else {
                             tracing::info!(name = %profile.name, "refused: the server is full");
                             conn.write_packet(&Disconnect {

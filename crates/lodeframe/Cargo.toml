@@ -19,6 +19,8 @@ lodeframe-text.workspace = true
 lodeframe-protocol.workspace = true
 lodeframe-macros.workspace = true
 tokio = { workspace = true, features = ["net", "io-util", "time", "rt", "sync", "macros", "signal"] }
+hmac.workspace = true
+sha2.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
