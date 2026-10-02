@@ -1,6 +1,6 @@
 # BungeeCord / BungeeGuard 転送の実装計画（M2-09）
 
-> **Status**: 計画 — 2026-10-03
+> **Status**: 実装済み — 2026-10-03
 
 要件: REQ-AUTH-003。決定: D14・D21・D27・D39・D40（[decisions.md](../decisions.md)）。
 `lodeframe`（本体）・`lodeframe-bot` にまたがり、公開関数 `net::serve` のハンドラ型が変わるので、コードの前にここで形を決める。M2-08 の [velocity-forwarding-plan.md](velocity-forwarding-plan.md) が作った `Forwarding` に変種を足す。
@@ -83,6 +83,7 @@ properties は JSON なので、認証前の入力を読むパーサが要る。
 
 - ハーネスは `Profile` を直接渡す（`connect_as`）ので変更なし。login の関数は実ソケットのボットで確かめる
 - ボットに **BungeeCord 役**を足す。`Bot::connect_behind` が受ける proxy 役を `Velocity` の 1 型から、役を表す型にする（`Proxy` の enum か、`Velocity` と並ぶ `Bungee`）。実装時に既存の呼び出し（M2-08 のテスト）を壊さない形を選び、選んだ形を実装の PR に書く
+  - 実装: 既存の `Velocity` と呼び出しはそのままに、`Bungee` と `Bot::{connect_bungee, login_bungee}` を足した（内部は `Proxy` の enum）
   - handshake の `server_address` に `host\0ip\0uuid\0properties` を詰める。BungeeGuard のトークンも載せられる
   - 誤ったトークン・トークン無し・不正な形式（区切りの数・UUID・JSON）を作れるオプションを持つ
 - ボットは protocol にだけ依存する（D27）ので、JSON の組み立ては文字列の連結で足りる。`serde_json` はボットに足さない

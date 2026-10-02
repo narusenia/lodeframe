@@ -112,7 +112,7 @@ async fn a_bad_connection_is_dropped_and_the_server_keeps_serving() {
         read_timeout: Duration::from_millis(200),
         ..Config::default()
     };
-    tokio::spawn(serve(listener, config, |mut conn, _| async move {
+    tokio::spawn(serve(listener, config, |mut conn, _, _| async move {
         conn.write_frame(&[0x00, b'o', b'k']).await
     }));
 
@@ -148,7 +148,7 @@ async fn the_server_list_ping_is_answered() {
     tokio::spawn(serve(
         listener,
         Config::default(),
-        |mut conn, _| async move {
+        |mut conn, _, _| async move {
             let mut info = StatusInfo::new("hello");
             info.online = 3;
             respond(&mut conn, &info).await
@@ -165,4 +165,24 @@ async fn the_server_list_ping_is_answered() {
     );
     c.write_packet(&PingRequest { payload: 42 }).await.unwrap();
     assert_eq!(c.read_packet::<PongResponse>().await.unwrap().payload, 42);
+}
+
+#[tokio::test]
+async fn the_handler_is_given_the_address_the_connection_came_from() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let tx = std::sync::Mutex::new(Some(tx));
+    tokio::spawn(serve(listener, Config::default(), move |_conn, _, peer| {
+        if let Some(tx) = tx.lock().unwrap().take() {
+            let _ = tx.send(peer);
+        }
+        async { Ok(()) }
+    }));
+
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let local = stream.local_addr().unwrap();
+    let mut c = Connection::new(stream, T);
+    c.write_packet(&intention(1)).await.unwrap();
+    assert_eq!(rx.await.unwrap(), local);
 }

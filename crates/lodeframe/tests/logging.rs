@@ -89,7 +89,7 @@ async fn connection_failures_are_logged_with_the_peer() {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(serve(listener, Config::default(), |_conn, _| async {
+    tokio::spawn(serve(listener, Config::default(), |_conn, _, _| async {
         Err(Error::InvalidValue("boom"))
     }));
 

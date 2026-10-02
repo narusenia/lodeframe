@@ -270,9 +270,9 @@ v0.5 以降と、Minestom の機能との 1 行ずつの対照は [minestom-pari
 
 - legacy forwarding（handshake のアドレス欄）と、BungeeGuard のトークン検証。Velocity と同じ設定の入り口から選ぶ。legacy forwarding は署名が無く、直接つながったクライアントが任意の UUID を名乗れるため、BungeeGuard を使わないときは信頼する proxy の送信元（許可リスト）からの接続だけを受け付ける。
 - **受入条件**
-  - [ ] BungeeCord 配下で正しい UUID・スキンでログインできる
-  - [ ] BungeeGuard のトークンが無いか合わない接続を拒否する
-  - [ ] BungeeGuard を使わない設定では、許可リストに無い送信元からの接続を拒否する
+  - [x] BungeeCord 配下で正しい UUID・スキンでログインできる（`Forwarding::BungeeCord { trusted }`。ボットの BungeeCord 役で確認。実 BungeeCord では未確認）
+  - [x] BungeeGuard のトークンが無いか合わない接続を拒否する（`Forwarding::BungeeGuard { tokens }`。トークンは定数時間で照合し、`Profile` には残さない）
+  - [x] BungeeGuard を使わない設定では、許可リストに無い送信元からの接続を拒否する（照合は接続のソケットアドレスだけで行い、転送された接続元とは取り違えない）
 
 ## WORLD
 
