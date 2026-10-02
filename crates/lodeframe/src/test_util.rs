@@ -58,14 +58,25 @@ use crate::{
 const OUTBOX: usize = 1 << 16;
 
 /// An [`Instance`] driven by hand.
+///
+/// Async work (`ctx.spawn`) runs on a runtime that only moves inside
+/// [`run_until_idle`](Self::run_until_idle), with its clock paused: a future that sleeps for an
+/// hour finishes at once, in the order of its timers. Drop the env outside an async context.
 pub struct TestEnv<I> {
     instance: I,
+    runtime: tokio::runtime::Runtime,
 }
 
 impl<I: Instance> TestEnv<I> {
     /// Wraps `instance`.
-    pub fn new(instance: I) -> Self {
-        Self { instance }
+    pub fn new(mut instance: I) -> Self {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .start_paused(true)
+            .build()
+            .expect("a current-thread runtime can be built");
+        instance.attach(runtime.handle().clone());
+        Self { instance, runtime }
     }
 
     /// The instance, to look at its state.
@@ -82,6 +93,32 @@ impl<I: Instance> TestEnv<I> {
     pub fn tick(&mut self, n: u32) {
         for _ in 0..n {
             self.instance.tick();
+        }
+    }
+
+    /// Runs the async work the instance has started until all of it is done, without running
+    /// any callback: those wait for the next [`tick`](Self::tick), as they do in a real server.
+    /// So a test of `ctx.spawn` is `env.run_until_idle(); env.tick(1);`.
+    ///
+    /// # Panics
+    ///
+    /// If work is still going after 5 seconds of real time, for example a future that waits for
+    /// something that never comes.
+    pub fn run_until_idle(&mut self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let alive = self.runtime.metrics().num_alive_tasks();
+            if alive == 0 {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{alive} async task(s) still running after 5 s"
+            );
+            // the clock is paused, so this waits for the earliest timer of any task, then returns
+            self.runtime.block_on(async {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            });
         }
     }
 

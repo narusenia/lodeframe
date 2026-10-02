@@ -259,7 +259,7 @@
 | 8.3 | 実行時期（次 tick・tick 数・時間・future 完了時・停止） | ⬜ | REQ-API-006（v0.2）。future は REQ-API-003 と同じ経路 |
 | 8.4 | tick の開始時か終了時か | ⬜ | REQ-API-006（v0.2） |
 | 8.5 | 次回を自分で決めるタスク | ⬜ | REQ-API-006（v0.2） |
-| 8.6 | Executor として使う | 不要 | Instance スレッドへの投入は `ctx.spawn` の戻し（D16）で足りる |
+| 8.6 | Executor として使う | 不要 | Instance スレッドへの投入は `ctx.spawn` の戻し（D16、実装済み: D33）で足りる |
 | 8.7 | シャットダウン時のタスク | ⬜ | REQ-NET-006（v0.2、停止処理と一緒に） |
 | 8.8 | tick レート・追いつきの上限の設定 | 🔶 20 TPS・2 秒で固定 | REQ-NET-006（v0.2） |
 | 8.9 | ThreadDispatcher（Instance 内の並列 tick） | ⬜ | 別枠（D6、region 分割） |

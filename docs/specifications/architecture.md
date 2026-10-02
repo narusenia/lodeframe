@@ -46,14 +46,14 @@ lodeframe/
 
 - conn task は状態機械（Handshake → Status / Login → Configuration → Play）を持ち、Play 以降のパケットだけを Instance に渡す。
 - ログイン前の async イベント（forwarding 検証、利用者の BAN 照会等）は conn task 側で await する。Instance には確定したプレイヤーだけが入る。
-- `ctx.spawn(fut).then(cb)`: fut は tokio で実行、結果は Instance の受信 channel に戻り、次 tick 冒頭で cb が `&mut` 付きで走る。
+- `ctx.spawn(fut).then(cb)`: fut は tokio で実行（`Instance::attach` で受け取った Handle）、結果は `Ctx` の channel に戻り、次 tick 冒頭で cb が `&mut Ctx` 付きで走る。`then_for(player, cb)` は退出済みなら呼ばない。cb は `Send` 不要で Instance のスレッドに残る（D33）。
 - グローバル可変シングルトンは置かない。サーバー全体の共有物（レジストリ等）は起動時に確定し不変で共有する。
 
 ## テストハーネス（D21）
 
 - tick ループは実時間を直接読まず、時計を差し替え可能にする。本番は 50ms 周期で回し、`TestEnv` は `tick(n)` で同期的に進める。
 - `TestEnv` では conn task の代わりに `FakePlayer` が Instance の inbound channel に直接パケットを入れ、outbound を記録する。エンコード層を通すかどうかは選択可能にする（既定は通さない）。
-- `ctx.spawn` は `TestEnv` 内では current-thread runtime で実行し、`run_until_idle()` で完了させる。
+- `ctx.spawn` は `TestEnv` 内では時間を止めた current-thread runtime で実行し、`run_until_idle()` で完了させる（cb は次の `tick` で動く）。
 
 ## イベント（D9）
 

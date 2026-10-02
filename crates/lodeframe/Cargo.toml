@@ -12,7 +12,7 @@ workspace = true
 
 [features]
 # the headless test harness, `lodeframe::test_util`
-test-util = []
+test-util = ["tokio/test-util"]
 
 [dependencies]
 lodeframe-text.workspace = true

@@ -26,6 +26,7 @@ use crate::{
         split_packet_id,
     },
     registry::Registries,
+    task::Tasks,
     text::Component,
 };
 
@@ -450,6 +451,7 @@ pub struct Ctx {
     departed: Vec<PlayerLeaveEvent>,
     // what handlers asked to emit or change in the tree, for `World` to do once they are done
     deferred: VecDeque<Deferred>,
+    pub(crate) tasks: Tasks,
 }
 
 impl Ctx {
@@ -477,6 +479,7 @@ impl Ctx {
             movers: Vec::new(),
             departed: Vec::new(),
             deferred: VecDeque::new(),
+            tasks: Tasks::new(),
         }
     }
 
@@ -1395,6 +1398,10 @@ impl std::ops::DerefMut for World {
 }
 
 impl Instance for World {
+    fn attach(&mut self, runtime: tokio::runtime::Handle) {
+        self.ctx.tasks.attach(runtime);
+    }
+
     fn handle(&mut self, message: Message) {
         match message {
             Message::Join { profile, outbound } => self.join(profile, outbound),
@@ -1411,6 +1418,7 @@ impl Instance for World {
     }
 
     fn tick(&mut self) {
+        self.ctx.run_done_tasks();
         self.ctx.tick();
         self.settle();
     }

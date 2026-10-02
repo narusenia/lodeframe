@@ -192,14 +192,50 @@ impl Instance for Counter {
     }
 }
 
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Runtime::new().unwrap()
+}
+
+/// Remembers that it was attached, and from which thread.
+struct Attached(Arc<std::sync::Mutex<Option<String>>>);
+
+impl Instance for Attached {
+    fn attach(&mut self, runtime: tokio::runtime::Handle) {
+        // the handle works: work can be sent through it
+        let task = runtime.spawn(async { 1 });
+        drop(task);
+        let name = std::thread::current().name().map(str::to_owned);
+        *self.0.lock().unwrap() = name;
+    }
+    fn handle(&mut self, _: Message) {}
+    fn tick(&mut self) {}
+}
+
+#[test]
+fn the_instance_is_attached_to_the_runtime_on_its_own_thread_before_it_runs() {
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let s = seen.clone();
+    let rt = runtime();
+    let handle = instance::spawn("attach-test", SystemClock, rt.handle().clone(), move || {
+        Attached(s)
+    })
+    .unwrap();
+    // `spawn` returns once the instance exists; attaching happens before its first tick
+    std::thread::sleep(ms(120));
+    handle.stop();
+    assert_eq!(seen.lock().unwrap().as_deref(), Some("attach-test"));
+}
+
 #[test]
 fn a_thread_ticks_in_real_time_and_the_instance_need_not_be_send() {
     let ticks = Arc::new(AtomicUsize::new(0));
     let t = ticks.clone();
     // Counter holds an Rc, so this only compiles because the instance is built on its thread
-    let handle = instance::spawn("test", SystemClock, move || Counter {
-        ticks: t,
-        _not_send: Rc::new(()),
+    let handle = instance::spawn("test", SystemClock, runtime().handle().clone(), move || {
+        Counter {
+            ticks: t,
+            _not_send: Rc::new(()),
+        }
     })
     .unwrap();
     std::thread::sleep(ms(520));
@@ -216,9 +252,11 @@ fn a_thread_ticks_in_real_time_and_the_instance_need_not_be_send() {
 fn the_thread_ends_when_every_handle_is_dropped() {
     let ticks = Arc::new(AtomicUsize::new(0));
     let t = ticks.clone();
-    let handle = instance::spawn("test", SystemClock, move || Counter {
-        ticks: t,
-        _not_send: Rc::new(()),
+    let handle = instance::spawn("test", SystemClock, runtime().handle().clone(), move || {
+        Counter {
+            ticks: t,
+            _not_send: Rc::new(()),
+        }
     })
     .unwrap();
     drop(handle);
