@@ -31,7 +31,7 @@ use crate::{
     configuration,
     instance::{self, Instance, InstanceHandle, MAX_BEHIND, Pacing, TICK, TickStats},
     login,
-    net::{Config, serve},
+    net::{Config, ProxyProtocol, serve},
     play::{self, KeepAliveConfig},
     protocol::{State, packets::configuration::Disconnect},
     registry::Registries,
@@ -120,6 +120,7 @@ pub struct Server {
     shutdown_timeout: Duration,
     forwarding: Forwarding,
     forwarding_timeout: Duration,
+    proxy_protocol: ProxyProtocol,
 }
 
 impl Server {
@@ -141,6 +142,7 @@ impl Server {
             shutdown_timeout: SHUTDOWN_TIMEOUT,
             forwarding: Forwarding::None,
             forwarding_timeout: FORWARDING_TIMEOUT,
+            proxy_protocol: ProxyProtocol::Off,
         }
     }
 
@@ -232,6 +234,18 @@ impl Server {
         self
     }
 
+    /// Whether a load balancer such as HAProxy writes who the client is at the start of each
+    /// connection; see [`ProxyProtocol`]. The default is that none does.
+    ///
+    /// It is separate from [`forwarding`](Self::forwarding): the balancer says where the
+    /// connection comes from, a proxy behind it can still say who the player is. The client the
+    /// header names is the player's [`remote_addr`](crate::world::Ctx::remote_addr), unless a
+    /// forwarding names one.
+    pub fn proxy_protocol(mut self, proxy_protocol: ProxyProtocol) -> Self {
+        self.proxy_protocol = proxy_protocol;
+        self
+    }
+
     /// How long a login waits for the proxy to answer with who the player is, before it turns
     /// the client away. The default is 5 seconds.
     pub fn forwarding_timeout(mut self, timeout: Duration) -> Self {
@@ -265,6 +279,12 @@ impl Server {
                 return invalid("the BungeeGuard tokens must not be empty");
             }
             _ => {}
+        }
+        if let ProxyProtocol::Optional { trusted } | ProxyProtocol::Required { trusted } =
+            &self.proxy_protocol
+            && trusted.is_empty()
+        {
+            return invalid("the trusted PROXY protocol addresses must not be empty");
         }
         Ok(())
     }
@@ -332,6 +352,7 @@ impl Server {
             listener,
             Config {
                 nodelay: options.nodelay,
+                proxy_protocol: options.proxy_protocol.clone(),
                 ..Config::default()
             },
             {
@@ -353,7 +374,7 @@ impl Server {
                             return status::respond(&mut conn, &info).await;
                         }
                         let threshold = Some(options.compression_threshold);
-                        let profile = match &options.forwarding {
+                        let mut profile = match &options.forwarding {
                             Forwarding::None => login::offline(&mut conn, threshold).await?,
                             Forwarding::Velocity { secret } => {
                                 login::velocity(
@@ -384,6 +405,11 @@ impl Server {
                                 .await?
                             }
                         };
+                        // a forwarding that names the client says it; without one, the balancer
+                        // that passed the connection on may have
+                        if profile.remote_addr.is_none() {
+                            profile.remote_addr = conn.proxied_addr().map(|a| a.ip());
+                        }
                         let Some(_slot) = slots.take() else {
                             tracing::info!(name = %profile.name, "refused: the server is full");
                             conn.write_packet(&Disconnect {

@@ -192,9 +192,9 @@ v0.5 以降と、Minestom の機能との 1 行ずつの対照は [minestom-pari
 
 - v1 / v2 を受け、実クライアントの IP を接続に持たせる。任意か必須かを設定で選ぶ。ヘッダは信頼する proxy の送信元（許可リスト）からだけ受け付ける。誰でも IP を偽れるため。
 - **受入条件**
-  - [ ] PROXY ヘッダの IP が接続の相手として取れる
-  - [ ] 必須の設定で、ヘッダの無い接続を拒否する
-  - [ ] 許可リストに無い送信元からの PROXY ヘッダを、形式が正しくても拒否する
+  - [x] PROXY ヘッダの IP が接続の相手として取れる（v1・v2。`net::serve` が渡す peer・`Connection::proxied_addr`・`ctx.remote_addr`。ボットの HAProxy 役で確認。実 HAProxy では未確認）
+  - [x] 必須の設定で、ヘッダの無い接続を拒否する（`Server::proxy_protocol(ProxyProtocol::Required { trusted })`）
+  - [x] 許可リストに無い送信元からの PROXY ヘッダを、形式が正しくても拒否する（任意・必須のどちらでも。許可リスト外のヘッダは解釈せず、署名だけ見て切る）
 
 ### REQ-NET-005: plugin message（login・play）
 

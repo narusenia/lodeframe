@@ -1,6 +1,6 @@
 # HAProxy PROXY protocol 実装計画（M2-10）
 
-> **Status**: 計画 — 2026-10-03
+> **Status**: 実装済み — 2026-10-03
 
 要件: REQ-NET-004。決定: D14・D21・D27・D40・D41（[decisions.md](../decisions.md)）。
 `lodeframe`（本体）・`lodeframe-bot` にまたがり、`net::Config`（公開型）と `serve` が受け取る peer の意味が変わるので、コードの前にここで形を決める。M2-09 の [bungeecord-forwarding-plan.md](bungeecord-forwarding-plan.md) が予告した「PROXY ヘッダの後ろの接続元を peer として扱う」を実現する。
