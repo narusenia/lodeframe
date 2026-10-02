@@ -104,7 +104,7 @@ pub struct Profile {
 | `Forwarding::BungeeCord` / `BungeeGuard` | M2-09 | M2-09 |
 | login の利用者向けフック（スキンを書き換える） | D38。M2-04 で決める | M2-04 |
 | 認証前の入力の数・大きさの制限 | REQ-NET-007 の対象 | v0.3 |
-| 実 Velocity での確認 | 手元に無い。ボットの Velocity 役で統合テストし、実機は利用者に頼む | 利用者 |
+| 実 Velocity での skin 付きの確認 | 実 Velocity 4.2.0（Java 25、offline mode）では UUID・名前・接続元・秘密違いの拒否を確認した。skin は online mode の proxy と正規アカウントが要るので未確認 | 利用者 |
 
 ## テスト
 

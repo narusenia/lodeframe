@@ -255,7 +255,7 @@ v0.5 以降と、Minestom の機能との 1 行ずつの対照は [minestom-pari
 ### REQ-AUTH-001: Velocity modern forwarding
 
 - **受入条件**
-  - [x] Velocity 配下で正しい UUID・スキンでログインできる（ボットの Velocity 役で確認。実 Velocity での確認は未実施）
+  - [x] Velocity 配下で正しい UUID・スキンでログインできる（ボットの Velocity 役と、実 Velocity 4.2.0（offline mode の proxy）で確認。skin は offline の proxy が付けないので、実際の skin 付きは未確認）
   - [x] 共有シークレット不一致の接続を拒否する（`Server::forwarding(Forwarding::Velocity { secret })`。proxy を通らない接続・版違い・応答なしも理由つきで拒否する）
 
 ### REQ-AUTH-002: online mode

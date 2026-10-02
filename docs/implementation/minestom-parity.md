@@ -31,7 +31,7 @@
 | 1.3 | 圧縮しきい値の設定 | ✅ `Server::compression_threshold`（既定 256） | — |
 | 1.4 | online mode（Mojang 認証・暗号化・認証 URL の差し替え・proxy 接続の拒否） | ⬜ | REQ-AUTH-002（v0.3） |
 | 1.5 | offline mode | ✅ | — |
-| 1.6 | Velocity modern forwarding | ✅ `Server::forwarding(Forwarding::Velocity { secret })`。スキンはタブリスト、接続元は `ctx.remote_addr`（実 Velocity は未確認） | — |
+| 1.6 | Velocity modern forwarding | ✅ `Server::forwarding(Forwarding::Velocity { secret })`。スキンはタブリスト、接続元は `ctx.remote_addr`（実 Velocity 4.2.0 で UUID・名前・接続元・秘密違いの拒否を確認。skin 付きは未確認） | — |
 | 1.7 | BungeeCord / BungeeGuard 転送 | ⬜ | REQ-AUTH-003（v0.2） |
 | 1.8 | HAProxy PROXY protocol v1/v2（任意・必須） | ⬜ | REQ-NET-004（v0.2） |
 | 1.9 | login 段階の plugin message（タイムアウト付き） | 🔶 `login::Queries::ask`（D38）。利用者向けのフックは無い | フックは M2-04（pre-login の async イベント） |
