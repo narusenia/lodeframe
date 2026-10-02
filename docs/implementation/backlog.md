@@ -87,7 +87,7 @@
 | ✅ | M2-03 | `ctx.spawn` | M2-01 | #35 |
 | ⬜ | M2-04 | ログイン前の async イベント | M2-06 | — |
 | ✅ | M2-05 | スケジューラ（Cooldown は M2-19 の後） | M2-01, M2-03 | #36 |
-| ✅ | M2-06 | サーバーの設定・在線人数・keep alive と遅延（[計画](server-config-plan.md)） | — | — |
+| ✅ | M2-06 | サーバーの設定・在線人数・keep alive と遅延（[計画](server-config-plan.md)） | —#39 |
 | ⬜ | M2-07 | plugin message | M2-06 | — |
 | ⬜ | M2-08 | Velocity modern forwarding | M2-07 | — |
 | ⬜ | M2-09 | BungeeCord / BungeeGuard | M2-06, M2-08（同じ設定の入り口） | — |
