@@ -3,6 +3,7 @@
 
 use lodeframe::{
     chunk::{ChunkLoader, ChunkPos, FlatGenerator},
+    event::{Event, EventNode, Listener},
     protocol::{
         BlockPos, Direction, Encode, VarInt, Vec3,
         block::{AIR, COBBLESTONE, STONE},
@@ -20,7 +21,8 @@ use lodeframe::{
     test_util::{FakePlayer, Received, Recorder, TestEnv},
     text::{Color, Component},
     world::{
-        BlockBreakEvent, BlockPlaceEvent, ChatEvent, Ctx, PlayerJoinEvent, PlayerLeaveEvent, World,
+        BlockBreakEvent, BlockPlaceEvent, ChatEvent, Ctx, PlayerEvent, PlayerJoinEvent,
+        PlayerLeaveEvent, World,
     },
 };
 
@@ -1381,4 +1383,157 @@ fn handlers_do_not_name_the_loader_of_the_world() {
     let mut steve = env.connect("Steve");
 
     assert_eq!(count(&steve.drain(), out::LOGIN), 1);
+}
+
+/// An event of the test's own that a handler emits from inside another handler.
+struct Ping(u32);
+impl Event for Ping {}
+
+type Log = std::rc::Rc<std::cell::RefCell<Vec<String>>>;
+
+fn log() -> Log {
+    Log::default()
+}
+
+fn note(log: &Log, line: impl Into<String>) {
+    log.borrow_mut().push(line.into());
+}
+
+#[test]
+fn an_event_a_handler_emits_arrives_after_it_in_the_same_call() {
+    let mut env = env();
+    let seen = log();
+    let events = env.instance_mut().events_mut();
+    let l = seen.clone();
+    events.on(move |_: &mut ChatEvent, ctx: &mut Ctx| {
+        ctx.emit(Ping(1));
+        note(&l, "chat");
+    });
+    let l = seen.clone();
+    events.on(move |e: &mut Ping, ctx: &mut Ctx| {
+        note(&l, format!("ping {}", e.0));
+        if e.0 < 3 {
+            ctx.emit(Ping(e.0 + 1));
+        }
+    });
+    let steve = env.connect("Steve");
+
+    // no tick runs in between: the events come with the packet that caused them
+    say(&mut env, &steve, "hello");
+
+    assert_eq!(*seen.borrow(), ["chat", "ping 1", "ping 2", "ping 3"]);
+}
+
+#[test]
+fn a_handler_that_keeps_emitting_is_stopped() {
+    let mut env = env();
+    let count = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    let events = env.instance_mut().events_mut();
+    let n = count.clone();
+    events.on(|_: &mut ChatEvent, ctx: &mut Ctx| ctx.emit(Ping(0)));
+    events.on(move |_: &mut Ping, ctx: &mut Ctx| {
+        n.set(n.get() + 1);
+        ctx.emit(Ping(0));
+    });
+    let steve = env.connect("Steve");
+
+    say(&mut env, &steve, "hello");
+
+    // it ran many times, but the world went on
+    assert!(count.get() >= 100, "ran {} times", count.get());
+    assert!(count.get() <= 1000);
+    assert!(
+        env.instance()
+            .is_online(env.instance().player_id(steve.uuid()).unwrap())
+    );
+}
+
+#[test]
+fn a_listener_added_by_a_handler_hears_the_next_event_not_this_one() {
+    let mut env = env();
+    let seen = log();
+    let l = seen.clone();
+    env.instance_mut().events_mut().add_listener(
+        Listener::new(move |_: &mut ChatEvent, ctx: &mut Ctx| {
+            note(&l, "first");
+            let l = l.clone();
+            ctx.add_listener(
+                Listener::new(move |_: &mut ChatEvent, _: &mut Ctx| note(&l, "added")).times(1),
+            );
+        })
+        .times(1),
+    );
+    let steve = env.connect("Steve");
+
+    say(&mut env, &steve, "one");
+    assert_eq!(*seen.borrow(), ["first"]);
+    say(&mut env, &steve, "two");
+    say(&mut env, &steve, "three");
+
+    // the added listener ran once, then took itself off
+    assert_eq!(*seen.borrow(), ["first", "added"]);
+}
+
+#[test]
+fn a_handler_can_take_a_listener_off_and_a_node_on_and_off() {
+    let mut env = env();
+    let seen = log();
+    let l = seen.clone();
+    let doomed = env.instance_mut().events_mut().add_listener(Listener::new(
+        move |_: &mut Ping, _: &mut Ctx| note(&l, "doomed"),
+    ));
+    let l = seen.clone();
+    env.instance_mut()
+        .events_mut()
+        .on(move |_: &mut ChatEvent, ctx: &mut Ctx| {
+            ctx.remove_listener(doomed);
+            let mut node = EventNode::<Ctx>::new();
+            let n = l.clone();
+            node.on(move |_: &mut Ping, _: &mut Ctx| note(&n, "node"));
+            ctx.add_node(node);
+            ctx.emit(Ping(0));
+        });
+    let steve = env.connect("Steve");
+
+    say(&mut env, &steve, "hello");
+
+    // the listener was taken off before the ping, and the node was there for it
+    assert_eq!(*seen.borrow(), ["node"]);
+}
+
+#[test]
+fn a_parent_listener_hears_events_about_players() {
+    let mut env = env();
+    let seen = log();
+    let l = seen.clone();
+    env.instance_mut()
+        .events_mut()
+        .on::<dyn PlayerEvent>(move |e, ctx| {
+            note(&l, ctx.name(e.player()).unwrap_or("gone"));
+        });
+    let steve = env.connect("Steve");
+    say(&mut env, &steve, "hello");
+    env.disconnect(steve);
+
+    // join, chat, and leave (when the name can no longer be looked up)
+    assert_eq!(*seen.borrow(), ["Steve", "Steve", "gone"]);
+}
+
+#[test]
+fn two_worlds_do_not_hear_each_others_handlers() {
+    let mut a = env();
+    let mut b = env();
+    let seen = log();
+    let l = seen.clone();
+    a.instance_mut()
+        .events_mut()
+        .on(move |_: &mut PlayerJoinEvent, _: &mut Ctx| note(&l, "a"));
+    let l = seen.clone();
+    b.instance_mut()
+        .events_mut()
+        .on(move |_: &mut PlayerJoinEvent, _: &mut Ctx| note(&l, "b"));
+
+    let _steve = b.connect("Steve");
+
+    assert_eq!(*seen.borrow(), ["b"]);
 }
