@@ -608,7 +608,8 @@ Adventure 相当の層（D19）。Component と MiniMessage は `lodeframe-text`
 - **受入条件**
   - [x] 1 秒ごとのカウントダウンを書け、プレイヤーの退出でそのプレイヤーのタスクが止まる
   - [x] テストハーネスの `env.tick(n)` で決定的に進む
-  - [ ] Cooldown 等の補助とエンティティ単位（Cooldown は M2-19 の後、エンティティは M2-17。D34）
+  - [x] Cooldown（`Cooldown`・`ctx.now()`。D36）
+  - [ ] エンティティ単位のタスク（M2-17。D34）
 
 ### REQ-API-007: 利用者データの付与
 

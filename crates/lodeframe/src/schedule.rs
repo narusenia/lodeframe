@@ -54,6 +54,25 @@ impl From<Duration> for Delay {
     }
 }
 
+/// A point in time: how many ticks a world has run. See [`Ctx::now`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Tick(u64);
+
+impl Tick {
+    /// The number of ticks.
+    pub const fn as_ticks(self) -> u64 {
+        self.0
+    }
+}
+
+impl std::ops::Add<Delay> for Tick {
+    type Output = Tick;
+
+    fn add(self, delay: Delay) -> Tick {
+        Tick(self.0.saturating_add(delay.0))
+    }
+}
+
 /// What a task wants after it ran.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Next {
@@ -252,6 +271,12 @@ impl Ctx {
             owner: Owner::World,
             phase: Phase::Start,
         }
+    }
+
+    /// The tick that is running or ran last: 0 until the world has ticked, then 1 more with each
+    /// tick. Counted in ticks, not read from a clock, so `env.tick(n)` moves it by `n`.
+    pub fn now(&self) -> Tick {
+        Tick(self.scheduler.now)
     }
 
     /// Stops a task that has not run again yet. Returns whether there was such a task; a task

@@ -3,6 +3,7 @@
 
 use lodeframe::{
     chunk::{ChunkLoader, ChunkPos, FlatGenerator},
+    cooldown::Cooldown,
     data::Key,
     event::{Event, EventNode, Listener},
     protocol::{
@@ -2161,4 +2162,74 @@ fn what_is_attached_to_the_world_lasts_across_ticks_and_goes_with_it() {
     assert!(!dropped.get());
     drop(env);
     assert!(dropped.get());
+}
+
+const FIRE: Key<Cooldown> = Key::new("test:fire");
+
+fn fire_on_chat(env: &mut TestEnv<World>, seen: &Log) {
+    let l = seen.clone();
+    env.instance_mut()
+        .events_mut()
+        .on(move |e: &mut ChatEvent, ctx: &mut Ctx| {
+            let now = ctx.now();
+            let cd = ctx
+                .player_data_mut(e.player)
+                .unwrap()
+                .get_or_insert_with(&FIRE, Cooldown::default);
+            let used = cd.try_use(now, Delay::secs(3));
+            note(&l, format!("{} {used}", e.name));
+        });
+}
+
+#[test]
+fn a_cooldown_waits_for_its_delay_and_is_kept_per_player() {
+    let mut env = env();
+    let seen = log();
+    fire_on_chat(&mut env, &seen);
+    let steve = env.connect("Steve");
+    let alex = env.connect("Alex");
+
+    say(&mut env, &steve, "a");
+    say(&mut env, &steve, "b");
+    say(&mut env, &alex, "c");
+    env.tick(59);
+    say(&mut env, &steve, "d");
+    env.tick(1);
+    say(&mut env, &steve, "e");
+
+    assert_eq!(
+        *seen.borrow(),
+        [
+            "Steve true",
+            "Steve false",
+            "Alex true",
+            "Steve false",
+            "Steve true"
+        ]
+    );
+}
+
+#[test]
+fn a_player_who_comes_back_starts_without_a_cooldown() {
+    let mut env = env();
+    let seen = log();
+    fire_on_chat(&mut env, &seen);
+    let steve = env.connect("Steve");
+    say(&mut env, &steve, "a");
+    env.disconnect(steve);
+
+    let back = env.connect("Steve");
+    say(&mut env, &back, "b");
+
+    assert_eq!(*seen.borrow(), ["Steve true", "Steve true"]);
+}
+
+#[test]
+fn the_tick_number_goes_up_by_one_with_each_tick() {
+    let mut env = env();
+    let start = env.instance().now();
+
+    env.tick(7);
+
+    assert_eq!(env.instance().now().as_ticks() - start.as_ticks(), 7);
 }

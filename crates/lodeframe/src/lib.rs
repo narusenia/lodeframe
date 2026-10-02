@@ -6,6 +6,7 @@
 pub mod chunk;
 pub mod clock;
 pub mod configuration;
+pub mod cooldown;
 pub mod data;
 pub mod event;
 pub mod instance;

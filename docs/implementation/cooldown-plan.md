@@ -1,6 +1,6 @@
 # Cooldown 実装計画（M2-27）
 
-> **Status**: 計画 — 2026-10-02
+> **Status**: 実装済み — 2026-10-02
 
 要件: REQ-API-006 の「Cooldown 等の補助」（サーバー側の判定。vanilla のアイテムのクールダウン表示とは別）。決定: D34・D35（[decisions.md](../decisions.md)）。
 本体の単一 crate 内の変更（`cooldown.rs` 新規・`schedule.rs`）。設計ゲートの対象外。
