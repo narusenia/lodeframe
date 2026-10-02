@@ -12,6 +12,7 @@ pub mod login;
 pub mod net;
 pub mod play;
 pub mod registry;
+pub mod schedule;
 pub mod server;
 pub mod status;
 pub mod task;

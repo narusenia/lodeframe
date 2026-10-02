@@ -26,6 +26,7 @@ use crate::{
         split_packet_id,
     },
     registry::Registries,
+    schedule::{Phase, Scheduler},
     task::Tasks,
     text::Component,
 };
@@ -452,6 +453,7 @@ pub struct Ctx {
     // what handlers asked to emit or change in the tree, for `World` to do once they are done
     deferred: VecDeque<Deferred>,
     pub(crate) tasks: Tasks,
+    pub(crate) scheduler: Scheduler,
 }
 
 impl Ctx {
@@ -480,6 +482,7 @@ impl Ctx {
             departed: Vec::new(),
             deferred: VecDeque::new(),
             tasks: Tasks::new(),
+            scheduler: Scheduler::default(),
         }
     }
 
@@ -1198,12 +1201,14 @@ impl Ctx {
         if let Ok(body) = packet_body(&PlayerInfoRemove { uuids: vec![id] }) {
             self.send_others(id, body);
         }
+        let gone = PlayerId {
+            uuid: id,
+            serial: player.serial,
+        };
+        self.cancel_tasks_of(gone);
         // the handlers hear of it once `World` is done with what it was doing
         self.departed.push(PlayerLeaveEvent {
-            player: PlayerId {
-                uuid: id,
-                serial: player.serial,
-            },
+            player: gone,
             name: player.name,
         });
     }
@@ -1419,7 +1424,9 @@ impl Instance for World {
 
     fn tick(&mut self) {
         self.ctx.run_done_tasks();
+        self.ctx.run_tasks(Phase::Start);
         self.ctx.tick();
+        self.ctx.run_tasks(Phase::End);
         self.settle();
     }
 }

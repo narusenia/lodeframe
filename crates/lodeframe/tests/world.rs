@@ -18,6 +18,7 @@ use lodeframe::{
         },
     },
     registry::Registries,
+    schedule::{Delay, Next},
     test_util::{FakePlayer, Received, Recorder, TestEnv},
     text::{Color, Component},
     world::{
@@ -1758,4 +1759,271 @@ fn spawning_in_a_world_that_was_never_attached_says_why() {
     let flat = FlatGenerator::default();
     let mut world = World::new(&Registries::vanilla(), move |pos| flat.load(pos));
     let _ = world.spawn(async {});
+}
+
+fn id_of(env: &TestEnv<World>, player: &FakePlayer) -> lodeframe::world::PlayerId {
+    env.instance().player_id(player.uuid()).unwrap()
+}
+
+#[test]
+fn a_task_runs_once_when_its_delay_is_over() {
+    let mut env = env();
+    let seen = log();
+    let l = seen.clone();
+    env.instance_mut()
+        .after(Delay::ticks(3))
+        .once(move |_| note(&l, "ran"));
+
+    env.tick(2);
+    assert!(seen.borrow().is_empty());
+    env.tick(1);
+    assert_eq!(*seen.borrow(), ["ran"]);
+    env.tick(10);
+    assert_eq!(*seen.borrow(), ["ran"]);
+}
+
+#[test]
+fn a_task_never_runs_in_the_tick_that_scheduled_it() {
+    let mut env = env();
+    let seen = log();
+    let l = seen.clone();
+    env.instance_mut().after(Delay::ZERO).once(move |ctx| {
+        note(&l, "outer");
+        let l = l.clone();
+        ctx.after(Delay::ZERO).once(move |_| note(&l, "inner"));
+    });
+
+    env.tick(1);
+    assert_eq!(*seen.borrow(), ["outer"]);
+    env.tick(1);
+    assert_eq!(*seen.borrow(), ["outer", "inner"]);
+}
+
+#[test]
+fn a_countdown_counts_a_second_at_a_time_and_stops() {
+    let mut env = env();
+    let seen = log();
+    let l = seen.clone();
+    let mut left = 3;
+    env.instance_mut().after(Delay::secs(1)).run(move |_| {
+        note(&l, format!("{left}"));
+        left -= 1;
+        if left == 0 {
+            Next::Stop
+        } else {
+            Next::After(Delay::secs(1))
+        }
+    });
+
+    env.tick(19);
+    assert!(seen.borrow().is_empty());
+    env.tick(1);
+    assert_eq!(*seen.borrow(), ["3"]);
+    env.tick(40);
+    assert_eq!(*seen.borrow(), ["3", "2", "1"]);
+    env.tick(100);
+    assert_eq!(seen.borrow().len(), 3);
+}
+
+#[test]
+fn a_repeating_task_runs_every_period_until_it_is_cancelled() {
+    let mut env = env();
+    let seen = log();
+    let l = seen.clone();
+    let id = env
+        .instance_mut()
+        .after(Delay::ZERO)
+        .every(std::time::Duration::from_millis(100), move |_| {
+            note(&l, "tick")
+        });
+
+    env.tick(5);
+    // ticks 1, 3 and 5
+    assert_eq!(seen.borrow().len(), 3);
+    assert!(env.instance_mut().cancel(id));
+    env.tick(10);
+    assert_eq!(seen.borrow().len(), 3);
+    assert!(!env.instance_mut().cancel(id));
+}
+
+#[test]
+fn a_task_can_cancel_itself_whatever_it_returns() {
+    let mut env = env();
+    let seen = log();
+    let l = seen.clone();
+    let me = std::rc::Rc::new(std::cell::Cell::new(None));
+    let m = me.clone();
+    let id = env.instance_mut().after(Delay::ZERO).run(move |ctx| {
+        note(&l, "ran");
+        assert!(ctx.cancel(m.get().unwrap()));
+        Next::After(Delay::ZERO)
+    });
+    me.set(Some(id));
+
+    env.tick(5);
+
+    assert_eq!(*seen.borrow(), ["ran"]);
+}
+
+#[test]
+fn a_task_cancels_one_that_is_due_in_the_same_tick() {
+    let mut env = env();
+    let seen = log();
+    let l = seen.clone();
+    let victim = std::rc::Rc::new(std::cell::Cell::new(None));
+    let v = victim.clone();
+    env.instance_mut()
+        .after(Delay::ticks(1))
+        .once(move |ctx| assert!(ctx.cancel(v.get().unwrap())));
+    let id = env
+        .instance_mut()
+        .after(Delay::ticks(1))
+        .once(move |_| note(&l, "ran"));
+    victim.set(Some(id));
+
+    env.tick(2);
+
+    assert!(seen.borrow().is_empty());
+}
+
+#[test]
+fn a_players_task_stops_when_they_leave() {
+    let mut env = env();
+    let seen = log();
+    let steve = env.connect("Steve");
+    let alex = env.connect("Alex");
+    for player in [&steve, &alex] {
+        let (id, l) = (id_of(&env, player), seen.clone());
+        let name = env.instance().name(id).unwrap().to_string();
+        env.instance_mut()
+            .after(Delay::secs(1))
+            .for_player(id)
+            .every(Delay::secs(1), move |_| note(&l, name.clone()));
+    }
+
+    env.tick(20);
+    assert_eq!(seen.borrow().len(), 2);
+    env.disconnect(steve);
+    env.tick(20);
+
+    let seen = seen.borrow();
+    assert_eq!(seen.iter().filter(|s| s.as_str() == "Alex").count(), 2);
+    assert_eq!(seen.iter().filter(|s| s.as_str() == "Steve").count(), 1);
+}
+
+#[test]
+fn a_task_does_not_go_to_a_player_who_came_back_under_the_same_name() {
+    let mut env = env();
+    let seen = log();
+    let steve = env.connect("Steve");
+    let (id, l) = (id_of(&env, &steve), seen.clone());
+    env.instance_mut()
+        .after(Delay::secs(1))
+        .for_player(id)
+        .every(Delay::secs(1), move |_| note(&l, "ran"));
+    env.disconnect(steve);
+    let _back = env.connect("Steve");
+
+    env.tick(60);
+
+    assert!(seen.borrow().is_empty());
+}
+
+#[test]
+fn nothing_is_scheduled_for_a_player_who_is_gone() {
+    let mut env = env();
+    let seen = log();
+    let steve = env.connect("Steve");
+    let (id, l) = (id_of(&env, &steve), seen.clone());
+    env.disconnect(steve);
+
+    let task = env
+        .instance_mut()
+        .after(Delay::ZERO)
+        .for_player(id)
+        .once(move |_| note(&l, "ran"));
+    env.tick(5);
+
+    assert!(seen.borrow().is_empty());
+    assert!(!env.instance_mut().cancel(task));
+}
+
+#[test]
+fn tasks_run_in_the_order_of_their_due_tick_and_then_of_when_they_were_made() {
+    let mut env = env();
+    let seen = log();
+    for (delay, name) in [(2, "c"), (1, "a"), (1, "b"), (2, "d")] {
+        let l = seen.clone();
+        env.instance_mut()
+            .after(Delay::ticks(delay))
+            .once(move |_| note(&l, name));
+    }
+
+    env.tick(2);
+
+    assert_eq!(*seen.borrow(), ["a", "b", "c", "d"]);
+}
+
+#[test]
+fn a_task_at_the_end_runs_after_the_tasks_at_the_start_of_the_same_tick() {
+    let mut env = env();
+    let seen = log();
+    let (end, start) = (seen.clone(), seen.clone());
+    // made first, but at the end of the tick
+    env.instance_mut()
+        .after(Delay::ZERO)
+        .at_end()
+        .once(move |_| note(&end, "end"));
+    env.instance_mut()
+        .after(Delay::ZERO)
+        .once(move |_| note(&start, "start"));
+
+    env.tick(1);
+
+    assert_eq!(*seen.borrow(), ["start", "end"]);
+}
+
+#[test]
+fn what_a_task_emits_is_handled_in_the_same_tick() {
+    let mut env = env();
+    let seen = log();
+    let l = seen.clone();
+    env.instance_mut()
+        .events_mut()
+        .on(move |e: &mut PlayerJoinEvent, _: &mut Ctx| note(&l, format!("join {}", e.name)));
+    let steve = env.connect("Steve");
+    seen.borrow_mut().clear();
+    let id = id_of(&env, &steve);
+    env.instance_mut().after(Delay::ZERO).once(move |ctx| {
+        let name = ctx.name(id).unwrap().to_string();
+        ctx.emit(PlayerJoinEvent { player: id, name });
+    });
+
+    env.tick(1);
+
+    assert_eq!(*seen.borrow(), ["join Steve"]);
+}
+
+#[test]
+fn dropping_the_world_drops_its_tasks() {
+    struct Guard(std::rc::Rc<std::cell::Cell<bool>>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            self.0.set(true);
+        }
+    }
+    let dropped = std::rc::Rc::new(std::cell::Cell::new(false));
+    let env = {
+        let mut env = env();
+        let guard = Guard(dropped.clone());
+        env.instance_mut().after(Delay::secs(60)).once(move |_| {
+            let _keep = &guard;
+        });
+        env
+    };
+    assert!(!dropped.get());
+
+    drop(env);
+
+    assert!(dropped.get());
 }
