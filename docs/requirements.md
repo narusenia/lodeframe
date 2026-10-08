@@ -546,9 +546,9 @@ Adventure 相当の層（D19）。Component と MiniMessage は `lodeframe-text`
 
 - `<red>`、`<bold>`、`<gradient>`、`<rainbow>`、`<hover>`、`<click>`、`<reset>`、placeholder（名前付き引数）。Component → MiniMessage 文字列の逆変換。
 - **受入条件**
-  - [ ] Adventure の MiniMessage と同じ入力で同じ見た目になる（主要タグ）
-  - [ ] 不正な入力はパニックせず、エラー位置付きで返すか平文として扱う（選択可能）
-  - [ ] placeholder に利用者入力を渡してもタグとして解釈されない
+  - [ ] Adventure の MiniMessage と同じ入力で同じ見た目になる（主要タグ）（実装済み。色・装飾・hover・click・reset・否定・エスケープなどの形は Adventure の仕様どおりに書いたが、**gradient・rainbow の色の式と phase の向きは Adventure のソースを見ずに決めた**ので、本体との突き合わせが済むまでチェックしない）
+  - [x] 不正な入力はパニックせず、エラー位置付きで返すか平文として扱う（選択可能）（`parse` はバイト位置つきの `Err`、`parse_lenient` は平文。タグ記号を詰めた 2 万件の入力で確認）
+  - [x] placeholder に利用者入力を渡してもタグとして解釈されない（`TagResolver::unparsed`・`component`）
 
 ### REQ-TEXT-003: Audience
 
