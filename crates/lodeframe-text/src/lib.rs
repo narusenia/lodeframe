@@ -5,9 +5,11 @@
 //! some [`Content`] (plain text, a translated key, a score, ...), a [`Style`], and children that
 //! follow it and inherit its style. Build one with the methods on [`Component`]; [`to_json`]
 //! (Component::to_json) and [`from_json`](Component::from_json) read and write it as JSON, and
-//! the protocol crate writes it as NBT.
+//! the protocol crate writes it as NBT. The [`mini`] module reads and writes MiniMessage, the
+//! tag syntax (`<red>Hello <bold>there`) for text that comes from a config file or a user.
 
 mod json;
+pub mod mini;
 
 use std::{fmt, ops::Add};
 
@@ -640,6 +642,30 @@ impl Color {
             .iter()
             .find(|(name, _)| *name == s)
             .map(|&(_, color)| color)
+    }
+
+    /// The red, green and blue the game draws the colour with.
+    pub fn rgb(self) -> (u8, u8, u8) {
+        let hex = |rgb: u32| ((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8);
+        match self {
+            Self::Black => hex(0x000000),
+            Self::DarkBlue => hex(0x0000AA),
+            Self::DarkGreen => hex(0x00AA00),
+            Self::DarkAqua => hex(0x00AAAA),
+            Self::DarkRed => hex(0xAA0000),
+            Self::DarkPurple => hex(0xAA00AA),
+            Self::Gold => hex(0xFFAA00),
+            Self::Gray => hex(0xAAAAAA),
+            Self::DarkGray => hex(0x555555),
+            Self::Blue => hex(0x5555FF),
+            Self::Green => hex(0x55FF55),
+            Self::Aqua => hex(0x55FFFF),
+            Self::Red => hex(0xFF5555),
+            Self::LightPurple => hex(0xFF55FF),
+            Self::Yellow => hex(0xFFFF55),
+            Self::White => hex(0xFFFFFF),
+            Self::Rgb(r, g, b) => (r, g, b),
+        }
     }
 }
 
