@@ -400,10 +400,11 @@ fn insertion_font_and_shadow() {
         Component::text("x").font("minecraft:uniform")
     );
     for (input, argb) in [
-        ("<shadow:red>", 0xFFFF_5555),
-        ("<shadow:red:0.5>", 0x80FF_5555),
+        ("<shadow:red>", 0x3FFF_5555),
+        ("<shadow:red:0.5>", 0x7FFF_5555),
+        ("<shadow:red:1>", 0xFFFF_5555),
         ("<shadow:#102030:0>", 0x0010_2030),
-        ("<shadow:#80ff0000>", 0x80FF_0000),
+        ("<shadow:#ff000080>", 0x80FF_0000),
         ("<!shadow>", 0),
     ] {
         assert_eq!(
@@ -415,7 +416,7 @@ fn insertion_font_and_shadow() {
     for bad in [
         "<shadow>",
         "<shadow:red:2>",
-        "<shadow:#80ff0000:1>",
+        "<shadow:#ff000080:1>",
         "<shadow:nope>",
         "<font>",
         "<insertion>",
@@ -483,8 +484,8 @@ fn a_gradient_colours_each_character() {
     assert_eq!(
         runs(&parse("<gradient>ab").unwrap()),
         [
-            text_run("a", rgb(0, 0, 0)),
-            text_run("b", rgb(255, 255, 255))
+            text_run("a", rgb(255, 255, 255)),
+            text_run("b", rgb(0, 0, 0))
         ]
     );
     // characters are characters, not bytes
@@ -511,7 +512,7 @@ fn a_gradient_goes_through_all_its_colours_and_can_be_shifted() {
     );
     assert_eq!(
         colours("<gradient:#000000:#ffffff:0.5>abc"),
-        [rgb(128, 128, 128), rgb(0, 0, 0), rgb(128, 128, 128)]
+        [rgb(128, 128, 128), rgb(255, 255, 255), rgb(128, 128, 128)]
     );
 }
 
@@ -546,18 +547,15 @@ fn a_rainbow_starts_at_red_and_can_run_backwards_and_shifted() {
     let backward = colours("<rainbow:!>abcdef");
     assert_eq!(forward.len(), 6);
     assert_eq!(forward[0], Some(Color::Rgb(255, 0, 0)));
-    assert_eq!(backward[0], Some(Color::Rgb(255, 0, 0)));
-    assert_ne!(forward[1], backward[1]);
-    // the same colours, the other way round
+    // the same colours, from the last to the first
     for k in 0..6 {
-        assert_eq!(backward[k], forward[(6 - k) % 6], "{k}");
+        assert_eq!(backward[k], forward[5 - k], "{k}");
     }
-    assert_ne!(colours("<rainbow:0.5>abcdef"), forward);
-    assert_eq!(
-        colours("<rainbow:!:0.5>abc").len(),
-        3,
-        "both arguments are taken"
-    );
+    // a phase is in tenths of the way round, and goes with the `!`
+    let shifted = colours("<rainbow:5>abcdef");
+    assert_ne!(shifted, forward);
+    assert_eq!(shifted[0], forward[3]);
+    assert_eq!(colours("<rainbow:!5>abc").len(), 3);
     assert_eq!(colours("<rainbow>x"), [Some(Color::Rgb(255, 0, 0))]);
 }
 
@@ -575,22 +573,136 @@ fn a_transition_is_one_colour() {
         runs(&parse("<transition:red:blue:1>x").unwrap()),
         [text_run("x", rgb(85, 85, 255))]
     );
+    // a negative phase counts from the end
+    assert_eq!(
+        runs(&parse("<transition:red:blue:-0.25>x").unwrap()),
+        [text_run("x", rgb(213, 85, 128))]
+    );
+    // no colours: white to black
+    assert_eq!(
+        runs(&parse("<transition:0.5>x").unwrap()),
+        [text_run("x", rgb(128, 128, 128))]
+    );
+    assert_eq!(
+        runs(&parse("<transition>x").unwrap()),
+        [text_run("x", rgb(255, 255, 255))]
+    );
     for bad in [
-        "<transition>",
-        "<transition:0.5>",
-        "<transition:red:blue>",
+        "<transition:red>",
         "<transition:red:blue:2>",
+        "<gradient:red>",
         "<gradient:nope:red>",
         "<gradient:red:blue:2>",
         "<gradient:red:blue:nan>",
-        "<rainbow:2>",
-        "<rainbow:!:!:1>",
+        "<rainbow:x>",
+        "<rainbow:0.5>",
+        "<rainbow:!:1>",
     ] {
         assert!(
             matches!(kind(bad).1, ErrorKind::BadArgument { .. }),
             "{bad}"
         );
     }
+}
+
+// what Adventure does with them, read from its source
+
+#[test]
+fn a_decoration_is_on_unless_it_says_false() {
+    for input in ["<b>x", "<b:true>x", "<b:maybe>x", "<b:1>x"] {
+        assert_eq!(
+            parse(input).unwrap(),
+            Component::text("x").bold(),
+            "{input}"
+        );
+    }
+    assert_eq!(
+        parse("<b:FALSE>x").unwrap(),
+        Component::text("x").decorate(Decoration::Bold, false)
+    );
+}
+
+#[test]
+fn a_tag_ending_in_a_slash_is_opened_and_closed_at_once() {
+    assert_eq!(
+        parse("a<newline/>b<br/>c").unwrap(),
+        Component::text("a\nb\nc")
+    );
+    assert_eq!(
+        parse("<key:key.jump/>").unwrap(),
+        Component::keybind("key.jump")
+    );
+    // nothing is inside it to draw
+    assert_eq!(parse("<red/>x").unwrap(), Component::text("x"));
+    assert_eq!(
+        runs(&parse("<red/>x<b:true/>y").unwrap()),
+        [text_run("xy", Style::default())]
+    );
+    // a link that ends in a slash is such a tag too
+    assert_eq!(
+        parse("<click:open_url:https://example.com/>go").unwrap(),
+        Component::text("go")
+    );
+    assert_eq!(
+        parse("<click:open_url:'https://example.com/'>go").unwrap(),
+        Component::text("go").click(ClickEvent::OpenUrl("https://example.com/".into()))
+    );
+    // a closing tag has no such form: it is text
+    assert_eq!(parse("</red/>").unwrap(), Component::text("</red/>"));
+}
+
+#[test]
+fn a_colon_before_two_slashes_does_not_end_an_argument() {
+    assert_eq!(
+        parse("<click:open_url:https://a.b:80/c>x").unwrap(),
+        Component::text("x").click(ClickEvent::OpenUrl("https://a.b:80/c".into()))
+    );
+    // `insert` is the name; `insertion` is taken too
+    for tag in ["insert", "insertion"] {
+        assert_eq!(
+            parse(&format!("<{tag}:hi>x")).unwrap(),
+            Component::text("x").insertion("hi")
+        );
+    }
+}
+
+#[test]
+fn a_gradient_takes_in_what_is_put_in_and_a_colour_of_its_own_is_kept() {
+    let tags = TagResolver::new()
+        .component("item", Component::text("XY"))
+        .component("gold", Component::text("XY").color(Color::Gold))
+        .component("key", Component::keybind("key.jump"));
+    let colours = |input: &str| -> Vec<Run> { runs(&parse_with(input, &tags).unwrap()) };
+    // XY are two of the four characters
+    assert_eq!(
+        colours("<gradient:#000000:#ffffff>a<item>b"),
+        [
+            text_run("a", rgb(0, 0, 0)),
+            text_run("X", rgb(85, 85, 85)),
+            text_run("Y", rgb(170, 170, 170)),
+            text_run("b", rgb(255, 255, 255)),
+        ]
+    );
+    // its own colour is kept, and the place it takes is kept too
+    assert_eq!(
+        colours("<gradient:#000000:#ffffff>a<gold>b"),
+        [
+            text_run("a", rgb(0, 0, 0)),
+            text_run(
+                "XY",
+                Style {
+                    color: Some(Color::Gold),
+                    ..Style::default()
+                }
+            ),
+            text_run("b", rgb(255, 255, 255)),
+        ]
+    );
+    // what is not text is one place, and gets its colour whole
+    let looks = colours("<gradient:#000000:#ffffff>a<key>b");
+    assert_eq!(looks.len(), 3);
+    assert!(matches!(looks[1].0, Item::Other(_)));
+    assert_eq!(looks[1].1, rgb(128, 128, 128));
 }
 
 // errors
@@ -611,12 +723,12 @@ fn a_strict_parse_says_what_and_where() {
     assert_eq!(kind("a<hover:show_text:'abc>"), (1, ErrorKind::Malformed));
     assert_eq!(kind("<hover:show_text:'abc'x>"), (0, ErrorKind::Malformed));
     assert_eq!(
-        kind("a <b:maybe>"),
+        kind("a <click:dance:x>"),
         (
             2,
             ErrorKind::BadArgument {
-                tag: "b".into(),
-                why: "expects true or false"
+                tag: "click".into(),
+                why: "unknown click action"
             }
         )
     );
