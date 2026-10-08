@@ -21,15 +21,18 @@
 //! - decorations: `<bold>`, `<italic>`, `<underlined>`, `<strikethrough>`, `<obfuscated>` (and
 //!   `<b>`, `<i>`, `<em>`, `<u>`, `<st>`, `<obf>`). `<!bold>` or `<bold:false>` turns one off
 //! - `<reset>` closes everything opened so far
-//! - `<gradient:red:blue>`, `<rainbow>`, `<transition:red:blue:0.5>`
+//! - `<gradient:red:blue>`, `<rainbow>`, `<transition:red:blue:0.5>`; the colours are worked out
+//!   as Adventure does
 //! - `<hover:show_text:'...'>`, `<hover:show_item:id[:count]>`,
 //!   `<hover:show_entity:type:uuid[:name]>`
 //! - `<click:open_url|run_command|suggest_command|change_page|copy_to_clipboard:value>`
-//! - `<insertion:text>`, `<font:id>`, `<shadow:colour[:alpha]>` (`<!shadow>` removes it)
+//! - `<insert:text>`, `<font:id>`, `<shadow:colour[:alpha]>` or `<shadow:#rrggbbaa>` (`<!shadow>`
+//!   removes it)
 //! - `<key:key.jump>`, `<lang:key[:arg...]>`, `<lang_or:key:fallback[:arg...]>`, `<newline>`
 //!
 //! Arguments are split by `:`; put `'...'` or `"..."` around one that has a `:` or `>` in it
-//! (`\'` and `\\` go inside). In text, `\<` is a `<` and `\\` is a `\`. A tag that is not closed
+//! (`\'` and `\\` go inside); a `:` before `//` is part of a link. `<tag/>` opens and closes at
+//! once. In text, `\<` is a `<` and `\\` is a `\`. A tag that is not closed
 //! is closed where the text ends. `selector`, `score`, `nbt`, `sprite` and `head` are not tags
 //! here.
 //!
