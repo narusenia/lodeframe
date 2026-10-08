@@ -124,12 +124,22 @@ impl Nbt {
             Self::List(items) => {
                 check_depth(depth + 1)?;
                 let tag = items.first().map_or(0, Nbt::tag);
-                if items.iter().any(|i| i.tag() != tag) {
-                    return Err(Error::InvalidValue("nbt list elements differ in type"));
-                }
-                tag.encode(w)?;
+                // elements of different types are all written as compounds, the ones that are
+                // not wrapped in a compound with the empty name, as the game does
+                let mixed = items.iter().any(|i| i.tag() != tag);
+                (if mixed { COMPOUND } else { tag }).encode(w)?;
                 write_len(w, items.len())?;
-                items.iter().try_for_each(|i| i.write_payload(w, depth + 1))
+                items.iter().try_for_each(|i| {
+                    if mixed && i.tag() != COMPOUND {
+                        check_depth(depth + 2)?;
+                        i.tag().encode(w)?;
+                        write_mutf8(w, "")?;
+                        i.write_payload(w, depth + 2)?;
+                        0u8.encode(w) // TAG_End
+                    } else {
+                        i.write_payload(w, depth + 1)
+                    }
+                })
             }
             Self::Compound(c) => {
                 check_depth(depth + 1)?;
@@ -169,7 +179,10 @@ impl Nbt {
                 check_remaining(len, r)?;
                 Self::List(
                     (0..len)
-                        .map(|_| Self::read_payload(elem, r, depth + 1))
+                        .map(|_| {
+                            Self::read_payload(elem, r, depth + 1)
+                                .map(|item| if elem == COMPOUND { unwrap(item) } else { item })
+                        })
                         .collect::<Result<_>>()?,
                 )
             }
@@ -205,6 +218,20 @@ impl Decode for Nbt {
     fn decode(r: &mut &[u8]) -> Result<Self> {
         let tag = u8::decode(r)?;
         Self::read_payload(tag, r, 0)
+    }
+}
+
+/// The tag of a compound.
+const COMPOUND: u8 = 10;
+
+/// Takes a value back out of the compound with the empty name that a list of mixed types wraps
+/// it in; a compound of anything else is itself.
+fn unwrap(item: Nbt) -> Nbt {
+    match item {
+        Nbt::Compound(Compound(mut entries)) if entries.len() == 1 && entries[0].0.is_empty() => {
+            entries.remove(0).1
+        }
+        item => item,
     }
 }
 
@@ -312,6 +339,63 @@ mod tests {
     }
 
     #[test]
+    fn a_list_of_mixed_types_is_written_as_compounds_with_the_odd_ones_wrapped() {
+        // the bytes the 26.3 game writes for `["b", {k: 1b}]`
+        let list = Nbt::List(vec![Nbt::from("b"), compound([("k", Nbt::Byte(1))])]);
+        let expected = [
+            9, 10, 0, 0, 0, 2, // a list of two compounds
+            8, 0, 0, 0, 1, b'b', 0, // "b" in a compound named ""
+            1, 0, 1, b'k', 1, 0, // the compound itself
+        ];
+        assert_eq!(encoded(&list), expected);
+        // and read back as what it was
+        roundtrip(list);
+    }
+
+    #[test]
+    fn lists_of_one_type_are_not_wrapped() {
+        let strings = Nbt::List(vec![Nbt::from("a"), Nbt::from("b")]);
+        assert_eq!(encoded(&strings)[..6], [9, 8, 0, 0, 0, 2]);
+        let compounds = Nbt::List(vec![compound([("k", Nbt::Byte(1))]); 2]);
+        assert_eq!(encoded(&compounds)[..6], [9, 10, 0, 0, 0, 2]);
+        roundtrip(strings);
+        roundtrip(compounds);
+    }
+
+    #[test]
+    fn a_compound_of_the_empty_name_alone_in_a_list_of_compounds_is_unwrapped() {
+        // what the game does, so a real compound like this cannot be told from a wrapped value
+        let wrapped = Nbt::List(vec![compound([("", Nbt::Int(5))]); 2]);
+        let mut bytes = Vec::new();
+        wrapped.encode(&mut bytes).unwrap();
+        let Nbt::List(items) = Nbt::decode(&mut bytes.as_slice()).unwrap() else {
+            panic!("a list")
+        };
+        assert_eq!(items, [Nbt::Int(5), Nbt::Int(5)]);
+        // with another entry it is a compound like any other
+        let other = Nbt::List(vec![compound([("", Nbt::Int(5)), ("k", Nbt::Int(6))])]);
+        roundtrip(other);
+    }
+
+    #[test]
+    fn wrapping_counts_as_a_level_of_depth() {
+        // a list of mixed types at the deepest level that is allowed has no room for the wrap
+        let nested =
+            |depth: usize, inner: Nbt| (0..depth).fold(inner, |inner, _| Nbt::List(vec![inner]));
+        let mixed = Nbt::List(vec![Nbt::Byte(0), Nbt::from("x")]);
+        assert!(
+            nested(MAX_DEPTH - 2, mixed.clone())
+                .encode(&mut Vec::new())
+                .is_ok()
+        );
+        assert!(
+            nested(MAX_DEPTH - 1, mixed)
+                .encode(&mut Vec::new())
+                .is_err()
+        );
+    }
+
+    #[test]
     fn network_form_has_no_root_name() {
         // the "hello world" example from the NBT specification, minus its root name
         let nbt = compound([("name", Nbt::from("Bananrama"))]);
@@ -358,11 +442,7 @@ mod tests {
             encoded(&Nbt::List(vec![Nbt::Byte(7)])),
             [9, 1, 0, 0, 0, 1, 7]
         );
-        let mixed = Nbt::List(vec![Nbt::Int(1), Nbt::Byte(2)]);
-        assert!(matches!(
-            mixed.encode(&mut Vec::new()),
-            Err(Error::InvalidValue(_))
-        ));
+        // (a list of mixed types is written as compounds: see the test of that)
         // TAG_End elements are only valid in an empty list
         let input = [9, 0, 0, 0, 0, 1];
         assert!(matches!(

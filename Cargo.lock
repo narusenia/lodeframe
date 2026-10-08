@@ -224,6 +224,9 @@ dependencies = [
 [[package]]
 name = "lodeframe-text"
 version = "0.0.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "log"

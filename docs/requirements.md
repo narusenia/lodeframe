@@ -539,8 +539,8 @@ Adventure 相当の層（D19）。Component と MiniMessage は `lodeframe-text`
 - v0.1: text / color / decoration のみ。v0.2: style（font・shadow 含む）、hover / click イベント、translatable / score / selector / keybind、子要素。builder API。NBT と JSON の両方でシリアライズ。
 - **受入条件**
   - [x] v0.1: 色・装飾付きテキストをチャットに表示できる
-  - [ ] v0.2: 全種の Component が vanilla クライアントで正しく表示される
-  - [ ] NBT / JSON の round-trip が一致する
+  - [ ] v0.2: 全種の Component が vanilla クライアントで正しく表示される（text・translatable・score・selector・keybind・nbt・sprite と style（font・shadow・insertion）・hover / click・子要素。26.3 の server.jar の codec が書く NBT と全種で一致し、書いた NBT をその codec が全種読むことは確認済み。**実クライアントでの表示は未確認**）
+  - [x] NBT / JSON の round-trip が一致する（`Component → JSON → Component`・`Component → NBT → Component`・両者が同じ NBT になる）
 
 ### REQ-TEXT-002: MiniMessage 実行時パーサ
 

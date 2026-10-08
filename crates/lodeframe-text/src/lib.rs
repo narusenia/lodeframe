@@ -1,25 +1,120 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Text components and the MiniMessage parser.
 //!
-//! So far: plain text with a colour and the five decorations. Children, events and
-//! the rest of the component model follow in v0.2.
+//! A [`Component`] is what the game shows as text: chat, titles, item names, kick messages. It is
+//! some [`Content`] (plain text, a translated key, a score, ...), a [`Style`], and children that
+//! follow it and inherit its style. Build one with the methods on [`Component`]; [`to_json`]
+//! (Component::to_json) and [`from_json`](Component::from_json) read and write it as JSON, and
+//! the protocol crate writes it as NBT.
 
-use std::fmt;
+mod json;
+
+use std::{fmt, ops::Add};
+
+pub use json::{MAX_DEPTH, ParseError, uuid_ints};
+/// The JSON value [`Component::from_value`] reads, and the object it is made of.
+pub use serde_json::{Map, Value};
 
 /// A piece of styled text, as shown in chat, titles and item names.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Component {
-    /// The text itself.
-    pub text: String,
-    /// How the text is drawn.
+    /// What is shown.
+    pub content: Content,
+    /// How it is drawn. Fields left unset inherit from the component this one is a child of.
     pub style: Style,
+    /// What follows, each drawn on top of this component's style.
+    pub children: Vec<Component>,
+}
+
+/// What a [`Component`] shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Content {
+    /// Literal text.
+    Text(String),
+    /// A line of the client's language file, with `args` put into its `%s` places.
+    Translatable {
+        /// The key, such as `chat.type.text`.
+        key: String,
+        /// What is shown when the client does not know the key.
+        fallback: Option<String>,
+        /// What goes into the `%s` places, in order.
+        args: Vec<Component>,
+    },
+    /// A scoreboard score.
+    Score {
+        /// Whose score: a player name, an entity selector, or `*` for whoever reads it.
+        name: String,
+        /// The objective the score is of.
+        objective: String,
+    },
+    /// The names of the entities a selector such as `@a` matches.
+    Selector {
+        /// The selector.
+        selector: String,
+        /// What goes between the names; `, ` by default.
+        separator: Option<Box<Component>>,
+    },
+    /// The key a game control is bound to, such as `key.jump`.
+    Keybind(String),
+    /// A value out of the NBT of an entity, a block or a command storage.
+    Nbt {
+        /// The NBT path.
+        path: String,
+        /// Where the NBT is.
+        source: NbtSource,
+        /// How the value is shown.
+        mode: NbtMode,
+        /// What goes between several values.
+        separator: Option<Box<Component>>,
+    },
+    /// A picture out of a texture atlas, drawn in the text.
+    Sprite {
+        /// The atlas, such as `minecraft:blocks`; the blocks atlas when unset.
+        atlas: Option<String>,
+        /// The sprite in the atlas, such as `block/stone`.
+        sprite: String,
+        /// What is shown when the client cannot draw the sprite.
+        fallback: Option<Box<Component>>,
+    },
+}
+
+impl Default for Content {
+    fn default() -> Self {
+        Self::Text(String::new())
+    }
+}
+
+/// How a [`Content::Nbt`] shows its value. The game takes at most one of the two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NbtMode {
+    /// As the text of the NBT, coloured by type.
+    #[default]
+    Default,
+    /// The value is itself read as a component.
+    Interpret,
+    /// As the text of the NBT, without the colouring of its type.
+    Plain,
+}
+
+/// Where a [`Content::Nbt`] reads from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NbtSource {
+    /// The entities an entity selector matches.
+    Entity(String),
+    /// The block at a position such as `~ ~ ~`.
+    Block(String),
+    /// A command storage, by id.
+    Storage(String),
 }
 
 /// How a [`Component`] is drawn. `None` inherits from the surrounding text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Style {
     /// The text colour.
     pub color: Option<Color>,
+    /// The colour of the shadow, `0xAARRGGBB`.
+    pub shadow_color: Option<u32>,
     /// Bold.
     pub bold: Option<bool>,
     /// Italic.
@@ -30,27 +125,268 @@ pub struct Style {
     pub strikethrough: Option<bool>,
     /// Randomly changing characters.
     pub obfuscated: Option<bool>,
+    /// What shift-clicking the text puts into the chat box.
+    pub insertion: Option<String>,
+    /// The font, by id, such as `minecraft:uniform`.
+    pub font: Option<String>,
+    /// What clicking the text does.
+    pub click: Option<ClickEvent>,
+    /// What hovering over the text shows.
+    pub hover: Option<Box<HoverEvent>>,
 }
 
 impl Style {
     /// Whether every field inherits.
-    pub const fn is_empty(&self) -> bool {
-        self.color.is_none()
-            && self.bold.is_none()
-            && self.italic.is_none()
-            && self.underlined.is_none()
-            && self.strikethrough.is_none()
-            && self.obfuscated.is_none()
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
     }
+
+    /// Sets a decoration, or lets it inherit with `None`.
+    pub fn set(&mut self, decoration: Decoration, value: Option<bool>) {
+        match decoration {
+            Decoration::Bold => self.bold = value,
+            Decoration::Italic => self.italic = value,
+            Decoration::Underlined => self.underlined = value,
+            Decoration::Strikethrough => self.strikethrough = value,
+            Decoration::Obfuscated => self.obfuscated = value,
+        }
+    }
+}
+
+/// One of the five on/off decorations of a [`Style`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(missing_docs)] // the variant names are the decoration names
+pub enum Decoration {
+    Bold,
+    Italic,
+    Underlined,
+    Strikethrough,
+    Obfuscated,
+}
+
+/// What clicking text does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ClickEvent {
+    /// Opens a web address, after the player confirms.
+    OpenUrl(String),
+    /// Runs a command as the player.
+    RunCommand(String),
+    /// Puts a command into the chat box.
+    SuggestCommand(String),
+    /// Turns a book to a page, counting from 1.
+    ChangePage(i32),
+    /// Copies text to the clipboard.
+    CopyToClipboard(String),
+}
+
+/// What hovering over text shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HoverEvent {
+    /// Another component.
+    ShowText(Component),
+    /// An item's tooltip.
+    ShowItem {
+        /// The item, such as `minecraft:stone`.
+        id: String,
+        /// How many.
+        count: i32,
+    },
+    /// An entity's tooltip.
+    ShowEntity {
+        /// The entity type, such as `minecraft:pig`.
+        entity_type: String,
+        /// The entity's UUID.
+        uuid: u128,
+        /// A name to show in place of the entity's own.
+        name: Option<Component>,
+    },
 }
 
 impl Component {
     /// Plain text that inherits its style.
     pub fn text(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            style: Style::default(),
+        Content::Text(text.into()).into()
+    }
+
+    /// Nothing at all. A place to put children under, with no style of its own.
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// A line break.
+    pub fn newline() -> Self {
+        Self::text("\n")
+    }
+
+    /// A space.
+    pub fn space() -> Self {
+        Self::text(" ")
+    }
+
+    /// A line of the client's language file. Put what goes into its `%s` places with
+    /// [`arg`](Self::arg).
+    pub fn translatable(key: impl Into<String>) -> Self {
+        Content::Translatable {
+            key: key.into(),
+            fallback: None,
+            args: Vec::new(),
         }
+        .into()
+    }
+
+    /// A scoreboard score of `name` on `objective`.
+    pub fn score(name: impl Into<String>, objective: impl Into<String>) -> Self {
+        Content::Score {
+            name: name.into(),
+            objective: objective.into(),
+        }
+        .into()
+    }
+
+    /// The names of the entities `selector` matches.
+    pub fn selector(selector: impl Into<String>) -> Self {
+        Content::Selector {
+            selector: selector.into(),
+            separator: None,
+        }
+        .into()
+    }
+
+    /// The key bound to the control `key`, such as `key.jump`.
+    pub fn keybind(key: impl Into<String>) -> Self {
+        Content::Keybind(key.into()).into()
+    }
+
+    /// The NBT at `path` of the entities `selector` matches.
+    pub fn nbt_entity(path: impl Into<String>, selector: impl Into<String>) -> Self {
+        Self::nbt(path, NbtSource::Entity(selector.into()))
+    }
+
+    /// The NBT at `path` of the block at `pos`, such as `~ ~ ~`.
+    pub fn nbt_block(path: impl Into<String>, pos: impl Into<String>) -> Self {
+        Self::nbt(path, NbtSource::Block(pos.into()))
+    }
+
+    /// The NBT at `path` of the command storage `id`.
+    pub fn nbt_storage(path: impl Into<String>, id: impl Into<String>) -> Self {
+        Self::nbt(path, NbtSource::Storage(id.into()))
+    }
+
+    fn nbt(path: impl Into<String>, source: NbtSource) -> Self {
+        Content::Nbt {
+            path: path.into(),
+            source,
+            mode: NbtMode::Default,
+            separator: None,
+        }
+        .into()
+    }
+
+    /// A picture `sprite` of the blocks atlas; change the atlas with [`atlas`](Self::atlas).
+    pub fn sprite(sprite: impl Into<String>) -> Self {
+        Content::Sprite {
+            atlas: None,
+            sprite: sprite.into(),
+            fallback: None,
+        }
+        .into()
+    }
+
+    /// The text if this is plain text, which is `None` for any other content.
+    pub fn as_text(&self) -> Option<&str> {
+        match &self.content {
+            Content::Text(text) => Some(text),
+            _ => None,
+        }
+    }
+
+    /// Adds `arg` to what goes into a [translatable](Self::translatable)'s `%s` places. Has no
+    /// effect on any other content.
+    #[must_use]
+    pub fn arg(mut self, arg: impl Into<Component>) -> Self {
+        if let Content::Translatable { args, .. } = &mut self.content {
+            args.push(arg.into());
+        }
+        self
+    }
+
+    /// Adds all of `args`, like [`arg`](Self::arg).
+    #[must_use]
+    pub fn args(mut self, new: impl IntoIterator<Item = Component>) -> Self {
+        if let Content::Translatable { args, .. } = &mut self.content {
+            args.extend(new);
+        }
+        self
+    }
+
+    /// Sets what a [translatable](Self::translatable) shows when the client does not know its
+    /// key. Has no effect on any other content.
+    #[must_use]
+    pub fn fallback(mut self, text: impl Into<String>) -> Self {
+        if let Content::Translatable { fallback, .. } = &mut self.content {
+            *fallback = Some(text.into());
+        }
+        self
+    }
+
+    /// Sets what goes between the values of a [selector](Self::selector) or an NBT component.
+    /// Has no effect on any other content.
+    #[must_use]
+    pub fn separator(mut self, separator: impl Into<Component>) -> Self {
+        if let Content::Selector { separator: s, .. } | Content::Nbt { separator: s, .. } =
+            &mut self.content
+        {
+            *s = Some(Box::new(separator.into()));
+        }
+        self
+    }
+
+    /// Makes an NBT component read its value as a component, in place of [`plain`](Self::plain).
+    /// Has no effect on any other content.
+    #[must_use]
+    pub fn interpret(mut self) -> Self {
+        if let Content::Nbt { mode, .. } = &mut self.content {
+            *mode = NbtMode::Interpret;
+        }
+        self
+    }
+
+    /// Makes an NBT component show its value without the colouring of its type, in place of
+    /// [`interpret`](Self::interpret). Has no effect on any other content.
+    #[must_use]
+    pub fn plain(mut self) -> Self {
+        if let Content::Nbt { mode, .. } = &mut self.content {
+            *mode = NbtMode::Plain;
+        }
+        self
+    }
+
+    /// Sets the atlas of a [sprite](Self::sprite). Has no effect on any other content.
+    #[must_use]
+    pub fn atlas(mut self, atlas: impl Into<String>) -> Self {
+        if let Content::Sprite { atlas: a, .. } = &mut self.content {
+            *a = Some(atlas.into());
+        }
+        self
+    }
+
+    /// Sets what a [sprite](Self::sprite) shows when it cannot be drawn. Has no effect on any
+    /// other content.
+    #[must_use]
+    pub fn sprite_fallback(mut self, fallback: impl Into<Component>) -> Self {
+        if let Content::Sprite { fallback: f, .. } = &mut self.content {
+            *f = Some(Box::new(fallback.into()));
+        }
+        self
+    }
+
+    /// Replaces the whole style.
+    #[must_use]
+    pub fn style(mut self, style: Style) -> Self {
+        self.style = style;
+        self
     }
 
     /// Sets the colour.
@@ -60,83 +396,154 @@ impl Component {
         self
     }
 
+    /// Sets the colour of the shadow, `0xAARRGGBB`.
+    #[must_use]
+    pub fn shadow_color(mut self, argb: u32) -> Self {
+        self.style.shadow_color = Some(argb);
+        self
+    }
+
     /// Makes the text bold.
     #[must_use]
-    pub fn bold(mut self) -> Self {
-        self.style.bold = Some(true);
-        self
+    pub fn bold(self) -> Self {
+        self.decorate(Decoration::Bold, true)
     }
 
     /// Makes the text italic.
     #[must_use]
-    pub fn italic(mut self) -> Self {
-        self.style.italic = Some(true);
-        self
+    pub fn italic(self) -> Self {
+        self.decorate(Decoration::Italic, true)
     }
 
     /// Underlines the text.
     #[must_use]
-    pub fn underlined(mut self) -> Self {
-        self.style.underlined = Some(true);
-        self
+    pub fn underlined(self) -> Self {
+        self.decorate(Decoration::Underlined, true)
     }
 
     /// Strikes the text through.
     #[must_use]
-    pub fn strikethrough(mut self) -> Self {
-        self.style.strikethrough = Some(true);
-        self
+    pub fn strikethrough(self) -> Self {
+        self.decorate(Decoration::Strikethrough, true)
     }
 
-    /// Makes the characters change randomly.
+    /// Makes the characters change at random.
     #[must_use]
-    pub fn obfuscated(mut self) -> Self {
-        self.style.obfuscated = Some(true);
+    pub fn obfuscated(self) -> Self {
+        self.decorate(Decoration::Obfuscated, true)
+    }
+
+    /// Turns a decoration on or off, whatever the text this is a child of does.
+    #[must_use]
+    pub fn decorate(mut self, decoration: Decoration, on: bool) -> Self {
+        self.style.set(decoration, Some(on));
         self
     }
-}
 
-impl Component {
-    /// The component as JSON text, which is how a few packets (a refusal while logging in) carry
-    /// it: `{"text":"..","color":"red","bold":true}`, with only the style that is set.
-    pub fn to_json(&self) -> String {
-        let mut json = String::from("{\"text\":");
-        push_json_string(&mut json, &self.text);
-        if let Some(color) = self.style.color {
-            json.push_str(&format!(",\"color\":\"{color}\""));
-        }
-        let decorations = [
-            ("bold", self.style.bold),
-            ("italic", self.style.italic),
-            ("underlined", self.style.underlined),
-            ("strikethrough", self.style.strikethrough),
-            ("obfuscated", self.style.obfuscated),
-        ];
-        for (name, value) in decorations {
-            if let Some(value) = value {
-                json.push_str(&format!(",\"{name}\":{value}"));
+    /// Lets a decoration inherit again.
+    #[must_use]
+    pub fn undecorate(mut self, decoration: Decoration) -> Self {
+        self.style.set(decoration, None);
+        self
+    }
+
+    /// Sets what shift-clicking the text puts into the chat box.
+    #[must_use]
+    pub fn insertion(mut self, insertion: impl Into<String>) -> Self {
+        self.style.insertion = Some(insertion.into());
+        self
+    }
+
+    /// Sets the font, by id.
+    #[must_use]
+    pub fn font(mut self, font: impl Into<String>) -> Self {
+        self.style.font = Some(font.into());
+        self
+    }
+
+    /// Sets what clicking the text does.
+    #[must_use]
+    pub fn click(mut self, click: ClickEvent) -> Self {
+        self.style.click = Some(click);
+        self
+    }
+
+    /// Opens `url` when the text is clicked.
+    #[must_use]
+    pub fn click_open_url(self, url: impl Into<String>) -> Self {
+        self.click(ClickEvent::OpenUrl(url.into()))
+    }
+
+    /// Runs `command` as the player when the text is clicked.
+    #[must_use]
+    pub fn click_run_command(self, command: impl Into<String>) -> Self {
+        self.click(ClickEvent::RunCommand(command.into()))
+    }
+
+    /// Puts `command` into the chat box when the text is clicked.
+    #[must_use]
+    pub fn click_suggest_command(self, command: impl Into<String>) -> Self {
+        self.click(ClickEvent::SuggestCommand(command.into()))
+    }
+
+    /// Sets what hovering over the text shows.
+    #[must_use]
+    pub fn hover(mut self, hover: HoverEvent) -> Self {
+        self.style.hover = Some(Box::new(hover));
+        self
+    }
+
+    /// Shows `text` when the text is hovered over.
+    #[must_use]
+    pub fn hover_text(self, text: impl Into<Component>) -> Self {
+        self.hover(HoverEvent::ShowText(text.into()))
+    }
+
+    /// Puts `child` after this component, drawn on top of its style.
+    #[must_use]
+    pub fn append(mut self, child: impl Into<Component>) -> Self {
+        self.children.push(child.into());
+        self
+    }
+
+    /// Puts all of `children` after this component, in order.
+    #[must_use]
+    pub fn append_all(mut self, children: impl IntoIterator<Item = Component>) -> Self {
+        self.children.extend(children);
+        self
+    }
+
+    /// Puts `separator` between `parts`: a component with no style of its own whose children are
+    /// the parts, with a copy of the separator between each two.
+    pub fn join(
+        separator: impl Into<Component>,
+        parts: impl IntoIterator<Item = Component>,
+    ) -> Self {
+        let separator = separator.into();
+        let mut joined = Self::empty();
+        for (i, part) in parts.into_iter().enumerate() {
+            if i > 0 {
+                joined.children.push(separator.clone());
             }
+            joined.children.push(part);
         }
-        json.push('}');
-        json
+        joined
+    }
+
+    /// Whether this is nothing but a place for children: no content, no style.
+    fn is_container(&self) -> bool {
+        self.style.is_empty() && matches!(&self.content, Content::Text(text) if text.is_empty())
     }
 }
 
-/// Appends `s` as a JSON string: quoted, with `"`, `\` and control characters escaped.
-fn push_json_string(json: &mut String, s: &str) {
-    json.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => json.push_str("\\\""),
-            '\\' => json.push_str("\\\\"),
-            '\n' => json.push_str("\\n"),
-            '\r' => json.push_str("\\r"),
-            '\t' => json.push_str("\\t"),
-            c if c < ' ' => json.push_str(&format!("\\u{:04x}", u32::from(c))),
-            c => json.push(c),
+impl From<Content> for Component {
+    fn from(content: Content) -> Self {
+        Self {
+            content,
+            style: Style::default(),
+            children: Vec::new(),
         }
     }
-    json.push('"');
 }
 
 impl From<&str> for Component {
@@ -148,6 +555,28 @@ impl From<&str> for Component {
 impl From<String> for Component {
     fn from(text: String) -> Self {
         Self::text(text)
+    }
+}
+
+/// Puts `rhs` after `self`, side by side. If `self` is only a place for children, `rhs` joins
+/// them; otherwise both become the children of a new one, so that neither takes the style of
+/// the other. `a + b + c` is one level of three.
+impl<T: Into<Component>> Add<T> for Component {
+    type Output = Component;
+
+    fn add(self, rhs: T) -> Component {
+        if self.is_container() {
+            self.append(rhs)
+        } else {
+            Component::empty().append(self).append(rhs)
+        }
+    }
+}
+
+/// Collects components side by side, as children of a place with no style of its own.
+impl FromIterator<Component> for Component {
+    fn from_iter<I: IntoIterator<Item = Component>>(iter: I) -> Self {
+        Self::empty().append_all(iter)
     }
 }
 
@@ -175,28 +604,55 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
+/// The sixteen named colours with the names the game uses.
+const NAMED: [(&str, Color); 16] = [
+    ("black", Color::Black),
+    ("dark_blue", Color::DarkBlue),
+    ("dark_green", Color::DarkGreen),
+    ("dark_aqua", Color::DarkAqua),
+    ("dark_red", Color::DarkRed),
+    ("dark_purple", Color::DarkPurple),
+    ("gold", Color::Gold),
+    ("gray", Color::Gray),
+    ("dark_gray", Color::DarkGray),
+    ("blue", Color::Blue),
+    ("green", Color::Green),
+    ("aqua", Color::Aqua),
+    ("red", Color::Red),
+    ("light_purple", Color::LightPurple),
+    ("yellow", Color::Yellow),
+    ("white", Color::White),
+];
+
+impl Color {
+    /// Reads a colour the way the game writes it: a name (`dark_blue`, in lower case) or
+    /// `#rrggbb` (in either case).
+    pub fn parse(s: &str) -> Option<Self> {
+        if let Some(hex) = s.strip_prefix('#') {
+            // `from_str_radix` would take a sign
+            if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return None;
+            }
+            let rgb = u32::from_str_radix(hex, 16).ok()?;
+            return Some(Self::Rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8));
+        }
+        NAMED
+            .iter()
+            .find(|(name, _)| *name == s)
+            .map(|&(_, color)| color)
+    }
+}
+
 /// The name the game uses: `red`, `dark_blue`, ... or `#rrggbb`.
 impl fmt::Display for Color {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = match self {
-            Self::Black => "black",
-            Self::DarkBlue => "dark_blue",
-            Self::DarkGreen => "dark_green",
-            Self::DarkAqua => "dark_aqua",
-            Self::DarkRed => "dark_red",
-            Self::DarkPurple => "dark_purple",
-            Self::Gold => "gold",
-            Self::Gray => "gray",
-            Self::DarkGray => "dark_gray",
-            Self::Blue => "blue",
-            Self::Green => "green",
-            Self::Aqua => "aqua",
-            Self::Red => "red",
-            Self::LightPurple => "light_purple",
-            Self::Yellow => "yellow",
-            Self::White => "white",
-            Self::Rgb(r, g, b) => return write!(f, "#{r:02x}{g:02x}{b:02x}"),
-        };
+        if let Self::Rgb(r, g, b) = self {
+            return write!(f, "#{r:02x}{g:02x}{b:02x}");
+        }
+        let (name, _) = NAMED
+            .iter()
+            .find(|(_, color)| color == self)
+            .expect("every named colour is in the table");
         f.write_str(name)
     }
 }
@@ -204,44 +660,6 @@ impl fmt::Display for Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn to_json_writes_the_text_and_only_the_style_that_is_set() {
-        assert_eq!(Component::text("hi").to_json(), r#"{"text":"hi"}"#);
-        assert_eq!(
-            Component::text("hi")
-                .color(Color::Red)
-                .bold()
-                .underlined()
-                .to_json(),
-            r##"{"text":"hi","color":"red","bold":true,"underlined":true}"##
-        );
-        assert_eq!(
-            Component::text("x").color(Color::Rgb(1, 2, 3)).to_json(),
-            r##"{"text":"x","color":"#010203"}"##
-        );
-        let mut c = Component::text("x");
-        c.style.italic = Some(false);
-        c.style.strikethrough = Some(true);
-        c.style.obfuscated = Some(true);
-        assert_eq!(
-            c.to_json(),
-            r#"{"text":"x","italic":false,"strikethrough":true,"obfuscated":true}"#
-        );
-    }
-
-    #[test]
-    fn to_json_escapes_what_json_needs() {
-        assert_eq!(
-            Component::text("a\"b\\c\nd\te\r\u{1}\u{1f}").to_json(),
-            r#"{"text":"a\"b\\c\nd\te\r\u0001\u001f"}"#
-        );
-        // everything else stays as it is
-        assert_eq!(
-            Component::text("日本語 §c").to_json(),
-            r#"{"text":"日本語 §c"}"#
-        );
-    }
 
     #[test]
     fn color_displays_the_game_name() {
@@ -253,18 +671,114 @@ mod tests {
     }
 
     #[test]
-    fn builders_set_only_what_they_name() {
-        let plain = Component::text("hi");
-        assert!(plain.style.is_empty());
+    fn color_parses_what_it_displays_and_hex_in_either_case() {
+        for (name, color) in NAMED {
+            assert_eq!(Color::parse(name), Some(color));
+            assert_eq!(color.to_string(), name);
+        }
+        // the game takes a name as it is written, and a hex number in either case
+        assert_eq!(Color::parse("RED"), None);
+        assert_eq!(Color::parse("#FF00a0"), Some(Color::Rgb(0xff, 0, 0xa0)));
+        for bad in [
+            "",
+            "#",
+            "#fff",
+            "#+f00a0",
+            "#ff00a0ff",
+            "ff00a0",
+            "reddish",
+            "#gg0000",
+        ] {
+            assert_eq!(Color::parse(bad), None, "{bad}");
+        }
+    }
 
-        let c = Component::text("hi").color(Color::Gold).bold().underlined();
-        assert_eq!(c.style.color, Some(Color::Gold));
-        assert_eq!((c.style.bold, c.style.underlined), (Some(true), Some(true)));
+    #[test]
+    fn builders_set_only_what_they_name() {
+        let c = Component::text("x").color(Color::Red).bold();
+        assert_eq!(c.style.color, Some(Color::Red));
+        assert_eq!(c.style.bold, Some(true));
+        assert_eq!(c.style.italic, None);
+        assert_eq!(c.as_text(), Some("x"));
+        assert!(Component::text("x").style.is_empty());
+        assert_eq!(Component::keybind("key.jump").as_text(), None);
+    }
+
+    #[test]
+    fn decorations_can_be_turned_off_and_back_to_inheriting() {
+        let c = Component::text("x").decorate(Decoration::Italic, false);
+        assert_eq!(c.style.italic, Some(false));
+        assert_eq!(c.undecorate(Decoration::Italic).style.italic, None);
+    }
+
+    #[test]
+    fn builders_for_a_kind_leave_other_kinds_alone() {
+        let text = Component::text("x")
+            .arg("a")
+            .fallback("f")
+            .interpret()
+            .atlas("a");
+        assert_eq!(text, Component::text("x"));
+        let t = Component::translatable("k")
+            .arg("a")
+            .args([Component::text("b")]);
         assert_eq!(
-            (c.style.italic, c.style.strikethrough, c.style.obfuscated),
-            (None, None, None)
+            t.content,
+            Content::Translatable {
+                key: "k".into(),
+                fallback: None,
+                args: vec![Component::text("a"), Component::text("b")],
+            }
         );
-        assert!(!c.style.is_empty());
-        assert_eq!(Component::from("hi"), plain);
+    }
+
+    #[test]
+    fn append_puts_children_after_in_order() {
+        let c = Component::text("a")
+            .append("b")
+            .append(Component::text("c").bold())
+            .append_all([Component::text("d")]);
+        let names: Vec<_> = c.children.iter().map(|c| c.as_text().unwrap()).collect();
+        assert_eq!(names, ["b", "c", "d"]);
+    }
+
+    #[test]
+    fn plus_puts_components_side_by_side_without_nesting() {
+        let a = Component::text("a").color(Color::Red);
+        let sum = a.clone() + "b" + Component::text("c").bold();
+        // one level: a, b, c
+        assert_eq!(sum.children.len(), 3);
+        assert_eq!(sum.children[0], a);
+        assert!(sum.is_container());
+        // the style of the left side stays on the left side
+        assert_eq!(sum.children[1].style, Style::default());
+    }
+
+    #[test]
+    fn plus_after_a_component_with_children_does_not_adopt_them() {
+        let parent = Component::text("p").bold().append("child");
+        let sum = parent.clone() + "next";
+        assert_eq!(sum.children, [parent, Component::text("next")]);
+    }
+
+    #[test]
+    fn collect_and_join_make_a_place_with_no_style() {
+        let parts = || ["a", "b", "c"].map(Component::text);
+        let collected: Component = parts().into_iter().collect();
+        assert_eq!(collected.children.len(), 3);
+        assert!(collected.is_container());
+
+        let joined = Component::join(", ", parts());
+        let texts: Vec<_> = joined
+            .children
+            .iter()
+            .map(|c| c.as_text().unwrap())
+            .collect();
+        assert_eq!(texts, ["a", ", ", "b", ", ", "c"]);
+        assert_eq!(Component::join(", ", []), Component::empty());
+        assert_eq!(
+            Component::join(", ", [Component::text("a")]).children.len(),
+            1
+        );
     }
 }

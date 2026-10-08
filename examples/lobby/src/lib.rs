@@ -51,7 +51,7 @@ pub fn lobby(registries: &Registries) -> World {
     });
 
     events.on(|e: &mut ChatEvent, ctx: &mut Ctx| {
-        let text = e.message.text.clone();
+        let text = e.message.as_text().unwrap_or_default().to_owned();
         if text.starts_with('.') {
             e.cancel();
             let hint = Component::text("There are no commands in the lobby.").color(Color::Gray);

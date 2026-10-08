@@ -344,15 +344,27 @@ struct RawSystemChat {
     overlay: bool,
 }
 
-/// The text of a component: a bare string, or the `text` of a compound. Children are left out.
+/// The text of a component, without its styles: a bare string, or the `text` of a compound, then
+/// the text of its `extra` children. A list is its elements, one after the other.
 fn plain_text(nbt: &Nbt) -> String {
+    let mut text = String::new();
+    push_text(nbt, &mut text);
+    text
+}
+
+fn push_text(nbt: &Nbt, out: &mut String) {
     match nbt {
-        Nbt::String(s) => s.clone(),
-        Nbt::Compound(c) => match c.get("text") {
-            Some(Nbt::String(s)) => s.clone(),
-            _ => String::new(),
-        },
-        _ => String::new(),
+        Nbt::String(s) => out.push_str(s),
+        Nbt::Compound(c) => {
+            if let Some(Nbt::String(s)) = c.get("text") {
+                out.push_str(s);
+            }
+            if let Some(Nbt::List(children)) = c.get("extra") {
+                children.iter().for_each(|child| push_text(child, out));
+            }
+        }
+        Nbt::List(items) => items.iter().for_each(|item| push_text(item, out)),
+        _ => {}
     }
 }
 
@@ -899,6 +911,19 @@ mod tests {
         styled.insert("color", Nbt::from("red"));
         let styled = chat_frame(Nbt::Compound(styled), Nbt::from("Alice"));
         assert_eq!(styled.chat_line().unwrap().text, "hello");
+
+        // the text of the children follows, whether they are strings or compounds
+        let mut parent = Compound::new();
+        parent.insert("text", Nbt::from("hel"));
+        parent.insert(
+            "extra",
+            Nbt::List(vec![
+                Nbt::from("l"),
+                Nbt::Compound(Compound(vec![("text".into(), Nbt::from("o"))])),
+            ]),
+        );
+        let children = chat_frame(Nbt::Compound(parent), Nbt::from("Alice"));
+        assert_eq!(children.chat_line().unwrap().text, "hello");
 
         let other = Frame {
             id: ids::play::clientbound::KEEP_ALIVE,
