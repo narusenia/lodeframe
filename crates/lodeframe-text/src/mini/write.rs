@@ -94,7 +94,7 @@ fn open(out: &mut String, style: &Style, depth: usize) -> Result<Vec<String>, Se
         if argb == 0 {
             out.push_str("<!shadow>");
         } else {
-            let _ = write!(out, "<shadow:#{argb:08x}>");
+            let _ = write!(out, "<shadow:#{:06x}{:02x}>", argb & 0xff_ffff, argb >> 24);
         }
         closers.push("shadow".into());
     }
@@ -111,8 +111,8 @@ fn open(out: &mut String, style: &Style, depth: usize) -> Result<Vec<String>, Se
         }
     }
     if let Some(insertion) = &style.insertion {
-        let _ = write!(out, "<insertion:{}>", quote(insertion));
-        closers.push("insertion".into());
+        let _ = write!(out, "<insert:{}>", quote(insertion));
+        closers.push("insert".into());
     }
     if let Some(font) = &style.font {
         let _ = write!(out, "<font:{}>", quote(font));

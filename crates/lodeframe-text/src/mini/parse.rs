@@ -7,7 +7,7 @@ use super::{
     Error, ErrorKind, TagResolver,
     tags::{self, Fail, Paint, Resolved, Wrap},
 };
-use crate::{Component, MAX_DEPTH};
+use crate::{Component, Content, MAX_DEPTH};
 
 /// How many `parsed` placeholders one text may put in, however they nest: one that contains
 /// itself twice would otherwise grow with the square of the depth.
@@ -96,7 +96,7 @@ pub(super) fn read(input: &str, cx: Cx<'_>) -> Result<Component, Error> {
 /// Handles the tag at `at` and returns where the text goes on.
 fn tag(input: &str, at: usize, tree: &mut Tree, cx: Cx<'_>) -> Result<usize, Error> {
     let fail = |kind| Error { position: at, kind };
-    let (closing, name, args, end) = match read_tag(input, at) {
+    let (closing, self_closing, name, args, end) = match read_tag(input, at) {
         Scan::NotATag => {
             tree.text("<");
             return Ok(at + 1);
@@ -110,16 +110,17 @@ fn tag(input: &str, at: usize, tree: &mut Tree, cx: Cx<'_>) -> Result<usize, Err
         }
         Scan::Tag {
             closing,
+            self_closing,
             name,
             args,
             end,
-        } => (closing, name, args, end),
+        } => (closing, self_closing, name, args, end),
     };
     let raw = &input[at..end];
     let outcome = if closing {
         tree.close(&tags::canonical(&name), &name, cx.lenient)
     } else {
-        open(tree, &name, &args, cx)
+        open(tree, &name, &args, self_closing, cx)
     };
     match outcome {
         Ok(()) => {}
@@ -130,7 +131,13 @@ fn tag(input: &str, at: usize, tree: &mut Tree, cx: Cx<'_>) -> Result<usize, Err
 }
 
 /// Opens or inserts what `<name:args>` is.
-fn open(tree: &mut Tree, name: &str, args: &[String], cx: Cx<'_>) -> Result<(), ErrorKind> {
+fn open(
+    tree: &mut Tree,
+    name: &str,
+    args: &[String],
+    self_closing: bool,
+    cx: Cx<'_>,
+) -> Result<(), ErrorKind> {
     let resolved = tags::resolve(name, args, cx, tree.stack.len()).map_err(|fail| match fail {
         Fail::Unknown => ErrorKind::UnknownTag(name.to_owned()),
         Fail::Bad(why) => ErrorKind::BadArgument {
@@ -143,6 +150,8 @@ fn open(tree: &mut Tree, name: &str, args: &[String], cx: Cx<'_>) -> Result<(), 
         Resolved::Text(text) => tree.text(&text),
         Resolved::Leaf(component) => tree.node(Node::Leaf(component)),
         Resolved::Reset => tree.reset(),
+        // closed at once: it has nothing to draw
+        Resolved::Wrap(_) if self_closing => {}
         Resolved::Wrap(wrap) => {
             if cx.depth + tree.stack.len() >= MAX_DEPTH {
                 return Err(ErrorKind::TooDeep);
@@ -165,6 +174,8 @@ enum Scan {
     Malformed,
     Tag {
         closing: bool,
+        /// `<tag/>`: opened and closed at once.
+        self_closing: bool,
         /// Lower case, with the `!` of `<!bold>`.
         name: String,
         args: Vec<String>,
@@ -194,16 +205,22 @@ fn read_tag(s: &str, start: usize) -> Scan {
     }
     let name = s[name_start..i].to_ascii_lowercase();
     let mut args = Vec::new();
+    let mut self_closing = false;
     loop {
         match bytes.get(i) {
             None => return Scan::Malformed,
             Some(b'>') => {
                 return Scan::Tag {
                     closing,
+                    self_closing,
                     name,
                     args,
                     end: i + 1,
                 };
+            }
+            Some(b'/') if !closing && bytes.get(i + 1) == Some(&b'>') => {
+                self_closing = true;
+                i += 1;
             }
             Some(b':') => {
                 i += 1;
@@ -233,14 +250,42 @@ fn read_tag(s: &str, start: usize) -> Scan {
                             arg.push_str(&s[i..next]);
                             i = next;
                         }
-                        if !matches!(bytes.get(i), Some(b':' | b'>')) {
+                        let slash = !closing
+                            && bytes.get(i) == Some(&b'/')
+                            && bytes.get(i + 1) == Some(&b'>');
+                        if !slash && !matches!(bytes.get(i), Some(b':' | b'>')) {
                             return Scan::Malformed;
                         }
                         args.push(arg);
                     }
                     _ => {
-                        let end = s[i..].find([':', '>']).map_or(s.len(), |n| i + n);
-                        args.push(s[i..end].to_owned());
+                        // a `:` is not the end of the argument in `https://`
+                        let mut end = i;
+                        loop {
+                            match s[end..].find([':', '>']) {
+                                None => {
+                                    end = s.len();
+                                    break;
+                                }
+                                Some(n)
+                                    if bytes[end + n] == b':'
+                                        && s[end + n + 1..].starts_with("//") =>
+                                {
+                                    end += n + 1;
+                                }
+                                Some(n) => {
+                                    end += n;
+                                    break;
+                                }
+                            }
+                        }
+                        let mut arg = s[i..end].to_owned();
+                        // `<a:b/>` ends the tag, it is not part of the argument
+                        if !closing && bytes.get(end) == Some(&b'>') && arg.ends_with('/') {
+                            arg.pop();
+                            self_closing = true;
+                        }
+                        args.push(arg);
                         i = end;
                     }
                 }
@@ -352,10 +397,50 @@ fn count(nodes: &[Node]) -> usize {
         .iter()
         .map(|n| match n {
             Node::Text(t) => t.chars().count(),
-            Node::Leaf(_) => 0,
+            Node::Leaf(c) => length(c),
             Node::Wrap(_, children) => count(children),
         })
         .sum()
+}
+
+/// The characters of a component and its children; what is not text counts as one.
+fn length(c: &Component) -> usize {
+    let own = match &c.content {
+        Content::Text(t) => t.chars().count(),
+        _ => 1,
+    };
+    own + c.children.iter().map(length).sum::<usize>()
+}
+
+/// Colours a component that was put in: the characters of its text one by one, anything else
+/// as a whole, unless it (or what it is in) has a colour already; it still takes its place in
+/// the line.
+fn paint_component(c: &Component, paint: &mut Paint, coloured: bool) -> Component {
+    let coloured = coloured || c.style.color.is_some();
+    // this component without its children, and the characters it is drawn as in front of them
+    let mut out = Component {
+        children: Vec::new(),
+        ..c.clone()
+    };
+    match &c.content {
+        Content::Text(t) if t.is_empty() => {}
+        Content::Text(t) if coloured => paint.skip(t.chars().count()),
+        Content::Text(t) => {
+            out.content = Content::default();
+            out.children = t
+                .chars()
+                .map(|ch| Component::text(ch.to_string()).color(paint.next()))
+                .collect();
+        }
+        _ if coloured => {}
+        _ => out.style.color = Some(paint.next()),
+    }
+    out.children.extend(
+        c.children
+            .iter()
+            .map(|child| paint_component(child, paint, coloured)),
+    );
+    out
 }
 
 /// `paint` colours the text it reaches, unless `coloured` says something inside has a colour of
@@ -377,7 +462,10 @@ fn render(nodes: &[Node], paint: &mut Option<Paint>, coloured: bool) -> Vec<Comp
                 }
                 None => out.push(Component::text(text.clone())),
             },
-            Node::Leaf(component) => out.push(component.clone()),
+            Node::Leaf(component) => out.push(match paint {
+                Some(paint) => paint_component(component, paint, coloured),
+                None => component.clone(),
+            }),
             Node::Wrap(Wrap::Style(style), children) => {
                 let coloured = coloured || style.color.is_some();
                 let inner = render(children, paint, coloured);

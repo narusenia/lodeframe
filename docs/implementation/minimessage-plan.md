@@ -59,6 +59,8 @@ TagResolver::new()
 - `<名前[:引数[:引数…]]>` が開きタグ、`</名前[:…]>` が閉じタグ。名前は `[A-Za-z0-9_#!?-]`（`#` は `<#rrggbb>`、先頭の `!` は否定）
 - 引数は `:` 区切り。`'…'` か `"…"` で囲むと `:`・`>`・空白を含められ、中では `\'`（`\"`）と `\\` だけがエスケープ。囲みは引数の先頭でだけ開く
 - 本文の `\<` は `<`、`\\` は `\`。それ以外の `\x` は 2 文字そのまま
+- `<tag/>`（`/>` で終わる）は**開いてすぐ閉じる**。挿入するタグ（`<newline/>`・`<key:k/>`）は普通に働き、スタイルを掛けるタグは何も掛けない。リンクが `/` で終わる `<click:open_url:https://x.com/>` もこの形になり、click は付かない（Adventure と同じ。囲めば付く）
+- 引数の中の `://` の `:` は区切りではない（`<click:open_url:https://x.com/a>`）
 - `<` のあとが名前の文字でない（`a < b`、`<3`）は、タグではなく**平文**（厳格でもエラーにしない）。名前の文字が続いたあと `>` が無いまま終わる（`<red`）は `Unterminated`（寛容では平文）
 
 ### 標準タグ
@@ -68,13 +70,13 @@ TagResolver::new()
 | 色 | `<red>`（16 色の名前。`grey`・`dark_grey` も）・`<#rrggbb>`・`<color:x>`（`c`・`colour`）。`x` は名前か `#rrggbb` |
 | 装飾 | `bold`(`b`)・`italic`(`i`, `em`)・`underlined`(`u`)・`strikethrough`(`st`)・`obfuscated`(`obf`)。`<!bold>` と `<bold:false>` は明示の off、`<bold:true>` は on |
 | `<reset>` | これまでに開いたタグをすべて閉じる（以後の文字は無装飾）。`reset` で閉じられたタグの閉じタグが後で来ても、エラーにしない |
-| `<gradient[:色…][:phase]>` | 中の文字を 1 文字ずつ色付けする。色が無ければ黒→白。`phase` は最後の引数が数のとき（-1〜1） |
-| `<rainbow[:!][:phase]>` | 虹色。`!` で逆向き |
-| `<transition:色…:phase>` | `phase`（0〜1）の位置の**1 色**を、中身全体に掛ける |
+| `<gradient[:色…][:phase]>` | 中の文字を 1 文字ずつ色付けする。色が無ければ**白→黒**、1 色だけはエラー。`phase` は最後の引数が数のとき（-1〜1。負は色の並びを逆にして `1 + phase`。色の並びを巡回する） |
+| `<rainbow[:[!][phase]]>` | 虹色。`!` で逆向き。`phase` は**整数**で、10 分の 1 周ぶんずらす（`<rainbow:!2>` のように `!` と続けて書ける） |
+| `<transition[:色…][:phase]>` | `phase`（-1〜1）の位置の**1 色**を、中身全体に掛ける。色が無ければ白→黒、1 色だけはエラー |
 | `<hover:show_text:'…'>` | 中は MiniMessage として解釈（placeholder も効く）。`show_item:id[:count]`・`show_entity:type:uuid[:name]` |
 | `<click:action:値>` | `open_url`・`run_command`・`suggest_command`・`change_page`（1 以上）・`copy_to_clipboard`。値の `:` は残りの引数をつなぎ直す（`<click:open_url:https://x>` が書ける） |
-| `<insertion:text>`・`<font:id>` | 値は残りの引数を `:` でつなぎ直す（`<font:minecraft:uniform>`） |
-| `<shadow:色[:alpha]>` | alpha は 0〜1（既定 1）。`#aarrggbb` の 8 桁も受ける。`<!shadow>` は影を消す（透明） |
+| `<insert:text>`（`insertion` も受ける）・`<font:id>` | 値は残りの引数を `:` でつなぎ直す（`<font:minecraft:uniform>`） |
+| `<shadow:色[:alpha]>` | alpha は 0〜1（**既定 0.25**、バイトに**切り捨て**）。`#rrggbbaa` の 8 桁も受ける（alpha が**後ろ**）。`<!shadow>` は影を消す（透明） |
 | `<key:key.jump>` | Keybind |
 | `<lang:key[:引数…]>`（`tr`・`translate`） | Translatable。引数は MiniMessage として解釈。`<lang_or:key:fallback[:引数…]>`（`tr_or`・`translate_or`）は fallback（平文）つき |
 | `<newline>`（`br`） | 改行 |
@@ -94,9 +96,8 @@ TagResolver::new()
 
 - 開いたタグは、その Style を持つ**空の Component**で、中身が children になる（入れ子のまま）。本文は 1 つの `Component::text`
 - `gradient`・`rainbow` は中の本文を **1 文字（`char`）ごと**の Component にして色を付ける。色の数は、`gradient` の範囲に入る本文（placeholder の `unparsed` を含む。Component placeholder・lang・key は数えず、色も付けない）の文字数で決める。範囲の中に明示の色タグがあれば、その中は明示の色が勝つ（文字の位置は進める）
-- 色の補間は RGB の線形、`round`。虹は色相 `i / n`（HSV、S = V = 1）。phase は位置を足して `[0,1)` に折り返す（phase 0 のときは両端の色がちょうど出る）
-
-**未検証**: gradient・rainbow の色の値と phase の向きは、Adventure のソースを見ずに式を決めた。「同じ入力で同じ見た目」（受入条件）は Adventure 本体との突き合わせが要る。jar の取得になるので、利用者に確認してから行う。
+- 色の式は **Adventure のソース（`GradientTag`・`RainbowTag`・`TransitionTag`・`TextColor.lerp`）を読んで合わせた**。gradient は `index × (色数 − 1)/(文字数 − 1) + phase × (色数 − 1)` の位置を色の並びの中で巡回して補間し、補間は `f32` で四捨五入。rainbow は色相 `(index / 文字数 + phase/10) % 1` を HSV（S = V = 1、各成分は**切り捨て**）で RGB にし、`!` では index が最後から始まる。transition は `phase` の位置を `f32` で補間（負の phase は区間を折り返す）
+- 文字数は **コードポイント**。`unparsed` の文字と、`component` で入れた Component の文字（子も）も数え、文字は 1 つずつ色が付く。Text でないもの（keybind など）は 1 文字ぶんで、色が無ければ丸ごと着色する。明示の色を持つ Component・その中は色を付けず、場所だけ進む
 
 ## 4. serialize（Component → MiniMessage）
 
@@ -167,5 +168,28 @@ TagResolver::new()
   - `<hover:show_item:…>` の id は、`minecraft:stone:2` のように名前空間が `:` で割れるので、**末尾が整数ならその数を count、そうでなければ残りを id につなぐ**。囲む（`'minecraft:stone':2`）のが確実で、`serialize` は囲んで書く
   - `<hover:show_entity:type:uuid[:name]>` の type も同様に、最初に UUID として読める引数の手前までを type につなぐ
   - hover のネスト: 各段で内側の引用符をエスケープするので、文字列は段ごとに倍になる。32 段に届くには非現実的な長さが要り、スタックの限界より先に入力の大きさが制約になる。深さ 32 の打ち切りは、`parsed` placeholder の連鎖と、閉じないタグ 1 万個で、512KB のスレッドで確かめた
-- 検証: 単体テスト 35 件（タグごと・色の値・厳格と寛容・placeholder の安全・独自タグ・serialize と往復・深さ・乱数 2 万件で panic しないことと「読んだものは書けて、書いたものは同じ見た目に読める」）、doctest、`mise run check`・`msrv`・`lint:license`
-- 未検証: Adventure 本体との見た目の突き合わせ（gradient・rainbow・transition の式と phase の向き、gradient の中の明示の色の扱い）。jar の取得になるので、利用者に確認してから行う
+- 検証: 単体テスト 39 件（タグごと・色の値・厳格と寛容・placeholder の安全・独自タグ・serialize と往復・深さ・乱数 2 万件で panic しないことと「読んだものは書けて、書いたものは同じ見た目に読める」）、doctest、`mise run check`・`msrv`・`lint:license`
+- 未検証: Adventure を実際に動かしての出力の比較（ソースを読んで式を合わせたことは、下の「Adventure のソースとの突き合わせ」）
+
+## Adventure のソースとの突き合わせ（2026-10-08）
+
+計画書の「未検証」を解くため、PaperMC/adventure（`main/5`）の `text-minimessage` を読んだ。**実装を動かして出力を比べたわけではない**（式とタグの解釈を読んで合わせた）。直したこと:
+
+- gradient: 既定色を黒→白から**白→黒**に、1 色だけを**エラー**に、phase を**巡回**に（負は色の並びを逆にして `1 + phase`）、補間を `f32` に、置いた Component の文字も数える・着色するに
+- rainbow: phase を**整数（10 分の 1）**に、`!` を phase と続けて書けるように、逆向きは**最後の index から**に、HSV の各成分を**切り捨て**に
+- transition: phase を -1〜1 に（負は折り返し）、色が無ければ白→黒に、1 色だけはエラーに
+- shadow: 8 桁 hex を `#rrggbbaa` に、alpha の既定を 0.25 に、バイトへは切り捨てに
+- タグ名: `insert`（`insertion` も受ける）。装飾は `false` 以外の引数なら on（`<b:maybe>` は on）
+- 構文: `<tag/>` の自己閉じ、引数の `://` の `:` は区切りではない
+
+**意図して Adventure と違うところ**（Adventure が受ける入力を同じ見た目で受けたうえで、受け入れる範囲が広い／狭い）:
+
+| 項目 | Adventure | ここ |
+|---|---|---|
+| 余分な引数 | 無視する（`<red:1>`・`<newline:2>`） | 厳格は `BadArgument`、寛容は平文 |
+| `click`・`insert`・`font`・`hover:show_text` の値 | 引数 1 つ（`<click:run_command:/msg a:b>` は `/msg a`） | 残りを `:` でつなぎ直す（`/msg a:b`）。囲めば同じ |
+| `show_item`・`show_entity` の名前空間つき id | 囲む必要がある | 囲まなくても読む（`minecraft:stone:2`） |
+| `show_item` の data components（追加の引数） | 読む | 未対応（D43 で外した `ShowItem` の components） |
+| rainbow の負の phase | `%` が負になり不定の色 | 折り返して正の色相にする |
+| `<reset>` | 厳格モードでは禁止 | 厳格でも使える |
+| `pride`・`selector`・`score`・`nbt`・`sprite`・`head` | ある | 無い（未知のタグ） |

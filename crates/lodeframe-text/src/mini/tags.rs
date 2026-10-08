@@ -33,6 +33,7 @@ pub(super) enum Fail {
 }
 
 type Res<T> = Result<T, Fail>;
+type Rgb = (u8, u8, u8);
 
 /// The name a tag is closed by: lower case, without the `!` of `<!bold>`, one name for the
 /// aliases.
@@ -44,6 +45,7 @@ pub(super) fn canonical(name: &str) -> String {
         "u" => "underlined",
         "st" => "strikethrough",
         "obf" => "obfuscated",
+        "insertion" => "insert",
         "c" | "colour" => "color",
         "tr" | "translate" => "lang",
         "tr_or" | "translate_or" => "lang_or",
@@ -80,12 +82,8 @@ pub(super) fn resolve(name: &str, args: &[String], cx: Cx<'_>, stack: usize) -> 
     }
     match base.as_str() {
         "bold" | "italic" | "underlined" | "strikethrough" | "obfuscated" => {
-            let on = match args {
-                [] => true,
-                [v] if v.eq_ignore_ascii_case("true") => true,
-                [v] if v.eq_ignore_ascii_case("false") => false,
-                _ => return Err(Fail::Bad("expects true or false")),
-            };
+            // as Adventure does: only `false` turns it off
+            let on = !matches!(args.first(), Some(v) if v.eq_ignore_ascii_case("false"));
             Ok(decoration(&base, on))
         }
         "reset" => no_args(args).map(|()| Resolved::Reset),
@@ -100,7 +98,7 @@ pub(super) fn resolve(name: &str, args: &[String], cx: Cx<'_>, stack: usize) -> 
         "transition" => transition(args),
         "hover" => hover(args, cx, stack),
         "click" => click(args),
-        "insertion" => Ok(style(Style {
+        "insert" => Ok(style(Style {
             insertion: Some(joined(args, "expects the text")?),
             ..Style::default()
         })),
@@ -214,28 +212,29 @@ fn shadow(args: &[String]) -> Res<Resolved> {
         [colour, alpha] => (colour, Some(alpha)),
         _ => return Err(Fail::Bad("expects a colour and perhaps an alpha")),
     };
-    // `#aarrggbb`
+    // `#rrggbbaa`, the alpha last as Adventure has it
     if let Some(hex) = colour.strip_prefix('#')
         && hex.len() == 8
         && hex.bytes().all(|b| b.is_ascii_hexdigit())
     {
         if alpha.is_some() {
-            return Err(Fail::Bad("an #aarrggbb colour has its alpha already"));
+            return Err(Fail::Bad("an #rrggbbaa colour has its alpha already"));
         }
-        let argb = u32::from_str_radix(hex, 16).map_err(|_| Fail::Bad("unknown colour"))?;
+        let rgba = u32::from_str_radix(hex, 16).map_err(|_| Fail::Bad("unknown colour"))?;
         return Ok(style(Style {
-            shadow_color: Some(argb),
+            shadow_color: Some(rgba.rotate_right(8)),
             ..Style::default()
         }));
     }
     let (r, g, b) = parse_color(colour)
         .ok_or(Fail::Bad("unknown colour"))?
         .rgb();
+    // a quarter as opaque unless told, and cut, not rounded, to a byte: as Adventure does
     let alpha = match alpha {
         Some(a) => number(a, 0.0, 1.0).ok_or(Fail::Bad("alpha is between 0 and 1"))?,
-        None => 1.0,
+        None => 0.25,
     };
-    let a = (alpha * 255.0).round() as u32;
+    let a = (alpha as f32 * 255.0) as u32;
     Ok(style(Style {
         shadow_color: Some(a << 24 | u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)),
         ..Style::default()
@@ -362,17 +361,21 @@ fn lang(tag: &str, args: &[String], cx: Cx<'_>, stack: usize) -> Res<Resolved> {
     Ok(Resolved::Leaf(component))
 }
 
-// colours that change along the text
+// colours that change along the text. The formulas are Adventure's (`GradientTag`, `RainbowTag`,
+// `TransitionTag`), in `f32` where it is, so that the same text gets the same colours.
 
 /// How a gradient or a rainbow colours the characters under it.
 #[derive(Clone)]
 pub(super) enum PaintSpec {
     Gradient {
-        colors: Vec<(u8, u8, u8)>,
+        /// Already turned round for a negative phase.
+        colors: Vec<Rgb>,
+        /// From 0 up to 1.
         phase: f64,
     },
     Rainbow {
         reverse: bool,
+        /// The phase in tenths, divided.
         phase: f64,
     },
 }
@@ -398,23 +401,33 @@ pub(super) struct Paint {
 impl Paint {
     /// The colour of the next character.
     pub fn next(&mut self) -> Color {
-        let i = self.index as f64;
-        let n = self.total as f64;
+        let k = self.index;
         self.index += 1;
+        let total = self.total.max(1);
         match &self.spec {
             PaintSpec::Gradient { colors, phase } => {
-                let mut at = if self.total > 1 { i / (n - 1.0) } else { 0.0 };
-                if *phase != 0.0 {
-                    at = (at + phase).rem_euclid(1.0);
-                }
-                blend(colors, at)
+                let n = colors.len();
+                // the colours spread over the text, the last at its last character
+                let multiplier = if total == 1 {
+                    0.0
+                } else {
+                    (n - 1) as f64 / (total - 1) as f64
+                };
+                let position = k as f64 * multiplier + phase * (n - 1) as f64;
+                let low_unclamped = position.floor();
+                // past the last colour it goes round to the first, so that a phase is a cycle
+                let high = (position.ceil() as usize) % n;
+                let low = (low_unclamped as usize) % n;
+                lerp(
+                    position as f32 - low_unclamped as f32,
+                    colors[low],
+                    colors[high],
+                )
             }
             PaintSpec::Rainbow { reverse, phase } => {
-                let mut hue = i / n;
-                if *reverse {
-                    hue = 1.0 - hue;
-                }
-                hsv((hue + phase).rem_euclid(1.0))
+                let at = if *reverse { total - 1 - k % total } else { k };
+                let hue = (f64::from(at as f32 / total as f32) + phase).rem_euclid(1.0);
+                hsv(hue as f32)
             }
         }
     }
@@ -425,60 +438,63 @@ impl Paint {
     }
 }
 
-/// The colour `at` (0 to 1) of the way along `colors`, mixed in RGB.
-fn blend(colors: &[(u8, u8, u8)], at: f64) -> Color {
-    let last = colors.len() - 1;
-    if last == 0 {
-        let (r, g, b) = colors[0];
-        return Color::Rgb(r, g, b);
-    }
-    let along = at.clamp(0.0, 1.0) * last as f64;
-    let from = (along.floor() as usize).min(last - 1);
-    let t = along - from as f64;
-    let mix = |a: u8, b: u8| (f64::from(a) + (f64::from(b) - f64::from(a)) * t).round() as u8;
-    let ((r1, g1, b1), (r2, g2, b2)) = (colors[from], colors[from + 1]);
-    Color::Rgb(mix(r1, r2), mix(g1, g2), mix(b1, b2))
+/// The colour `t` (0 to 1) of the way from `a` to `b`, mixed in RGB and rounded.
+fn lerp(t: f32, a: Rgb, b: Rgb) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    let mix = |a: u8, b: u8| (f32::from(a) + t * (f32::from(b) - f32::from(a)) + 0.5).floor() as u8;
+    Color::Rgb(mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
 }
 
-/// The colour of hue `h` (0 to 1) at full saturation and value.
-fn hsv(h: f64) -> Color {
+/// The colour of hue `h` (0 to 1) at full saturation and value; each part cut to a byte.
+fn hsv(h: f32) -> Color {
     let sector = h * 6.0;
-    let f = sector - sector.floor();
-    let (r, g, b) = match sector.floor() as i32 % 6 {
-        0 => (1.0, f, 0.0),
-        1 => (1.0 - f, 1.0, 0.0),
-        2 => (0.0, 1.0, f),
-        3 => (0.0, 1.0 - f, 1.0),
-        4 => (f, 0.0, 1.0),
-        _ => (1.0, 0.0, 1.0 - f),
+    let i = sector.floor() as i32;
+    let f = sector - i as f32;
+    let (q, t) = (1.0 - f, f);
+    let (r, g, b) = match i {
+        0 => (1.0, t, 0.0),
+        1 => (q, 1.0, 0.0),
+        2 => (0.0, 1.0, t),
+        3 => (0.0, q, 1.0),
+        4 => (t, 0.0, 1.0),
+        _ => (1.0, 0.0, q),
     };
-    let byte = |v: f64| (v * 255.0).round() as u8;
+    let byte = |v: f32| (v * 255.0) as u8;
     Color::Rgb(byte(r), byte(g), byte(b))
 }
 
-/// Colours from arguments.
-fn colors(args: &[String]) -> Res<Vec<(u8, u8, u8)>> {
-    args.iter()
-        .map(|a| {
-            parse_color(a)
-                .map(Color::rgb)
-                .ok_or(Fail::Bad("unknown colour"))
-        })
-        .collect()
+/// Colours, and a phase in `-1..=1` as the last argument if it is a number.
+fn colors_and_phase(args: &[String]) -> Res<(Vec<Rgb>, f64)> {
+    let mut colors = Vec::new();
+    for (i, arg) in args.iter().enumerate() {
+        if let Some(color) = parse_color(arg) {
+            colors.push(color.rgb());
+        } else if i + 1 == args.len() && arg.parse::<f64>().is_ok() {
+            let phase = number(arg, -1.0, 1.0).ok_or(Fail::Bad("phase is between -1 and 1"))?;
+            return Ok((colors, phase));
+        } else {
+            return Err(Fail::Bad("unknown colour"));
+        }
+    }
+    Ok((colors, 0.0))
 }
 
+const WHITE_TO_BLACK: [Rgb; 2] = [(255, 255, 255), (0, 0, 0)];
+
 fn gradient(args: &[String]) -> Res<Resolved> {
-    let (colours, phase) = match args.split_last() {
-        Some((last, rest)) if last.parse::<f64>().is_ok() => (
-            rest,
-            number(last, -1.0, 1.0).ok_or(Fail::Bad("phase is between -1 and 1"))?,
-        ),
-        _ => (args, 0.0),
-    };
-    let mut colors = colors(colours)?;
-    if colors.is_empty() {
-        colors = vec![(0, 0, 0), (255, 255, 255)];
+    let (mut colors, phase) = colors_and_phase(args)?;
+    match colors.len() {
+        0 => colors = WHITE_TO_BLACK.to_vec(),
+        1 => return Err(Fail::Bad("a gradient needs two colours at least")),
+        _ => {}
     }
+    // a negative phase runs the colours the other way
+    let phase = if phase < 0.0 {
+        colors.reverse();
+        1.0 + phase
+    } else {
+        phase
+    };
     Ok(Resolved::Wrap(Wrap::Paint(PaintSpec::Gradient {
         colors,
         phase,
@@ -486,25 +502,61 @@ fn gradient(args: &[String]) -> Res<Resolved> {
 }
 
 fn rainbow(args: &[String]) -> Res<Resolved> {
-    let (reverse, rest) = match args.split_first() {
-        Some((first, rest)) if first == "!" => (true, rest),
-        _ => (false, args),
-    };
-    let phase = match rest {
-        [] => 0.0,
-        [phase] => number(phase, -1.0, 1.0).ok_or(Fail::Bad("phase is between -1 and 1"))?,
-        _ => return Err(Fail::Bad("expects `!` and a phase at most")),
+    let (reverse, phase) = match args {
+        [] => (false, 0),
+        [arg] => {
+            let (reverse, number) = match arg.strip_prefix('!') {
+                Some(rest) => (true, rest),
+                None => (false, arg.as_str()),
+            };
+            let phase = if number.is_empty() {
+                0
+            } else {
+                number
+                    .parse::<i32>()
+                    .map_err(|_| Fail::Bad("expects `!` and a whole-number phase"))?
+            };
+            (reverse, phase)
+        }
+        _ => return Err(Fail::Bad("expects `!` and a whole-number phase at most")),
     };
     Ok(Resolved::Wrap(Wrap::Paint(PaintSpec::Rainbow {
         reverse,
-        phase,
+        phase: f64::from(phase) / 10.0,
     })))
 }
 
 fn transition(args: &[String]) -> Res<Resolved> {
-    let Some((phase, colours)) = args.split_last().filter(|(_, c)| !c.is_empty()) else {
-        return Err(Fail::Bad("expects colours and a phase"));
+    let (mut colors, phase) = colors_and_phase(args)?;
+    if colors.len() == 1 {
+        return Err(Fail::Bad("a transition needs two colours at least"));
+    }
+    let negative = phase < 0.0;
+    let phase = if negative {
+        colors.reverse();
+        1.0 + phase
+    } else {
+        phase
     };
-    let phase = number(phase, 0.0, 1.0).ok_or(Fail::Bad("phase is between 0 and 1"))?;
-    Ok(coloured(blend(&colors(colours)?, phase)))
+    if colors.is_empty() {
+        colors = WHITE_TO_BLACK.to_vec();
+    }
+    let phase = phase as f32;
+    let last = colors.len() - 1;
+    let steps = 1.0 / last as f32;
+    for at in 1..=last {
+        let val = at as f32 * steps;
+        if val >= phase {
+            let factor = 1.0 + (phase - val) * last as f32;
+            // the segment is turned round for a negative phase, as Adventure does
+            let color = if negative {
+                lerp(1.0 - factor, colors[at], colors[at - 1])
+            } else {
+                lerp(factor, colors[at - 1], colors[at])
+            };
+            return Ok(coloured(color));
+        }
+    }
+    let (r, g, b) = colors[last];
+    Ok(coloured(Color::Rgb(r, g, b)))
 }
