@@ -16,7 +16,7 @@ use lodeframe::{
     },
     registry::Registries,
     server::{RunningServer, Server},
-    text::Component,
+    text::{Color, Component},
     world::{ChatEvent, Ctx, World},
 };
 use lodeframe_bot::{Bot, ChatLine, Frame, spread_position};
@@ -299,5 +299,40 @@ async fn the_result_of_async_work_comes_back_to_the_world_on_a_real_server() {
         .await
         .unwrap();
     assert_eq!(message, "ALICE");
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_component_with_children_and_events_arrives_whole() {
+    let server = Server::new("127.0.0.1:0")
+        .start(|registries: &Registries| {
+            let mut world = World::new(registries, FlatGenerator::default());
+            world.view_distance = 2;
+            world.events_mut().on(|e: &mut ChatEvent, ctx: &mut Ctx| {
+                let name = Component::text(e.name.clone())
+                    .color(Color::Gold)
+                    .bold()
+                    .hover_text(Component::translatable("chat.type.text").arg("hi"))
+                    .click_suggest_command(format!("/msg {}", e.name));
+                let line = Component::text("[").color(Color::Gray)
+                    + name
+                    + Component::text("] ")
+                    + Component::text("welcome").italic();
+                ctx.broadcast(&line);
+                e.cancel();
+            });
+            world
+        })
+        .await
+        .unwrap();
+    let mut alice = Bot::connect(server.addr(), "Alice").await.unwrap();
+
+    alice.chat("anything").await.unwrap();
+
+    let line = alice
+        .recv_until(WAIT, |f| f.system_message())
+        .await
+        .unwrap();
+    assert_eq!(line, "[Alice] welcome");
     server.stop();
 }

@@ -275,7 +275,7 @@
 | 9.1 | Audience（Player・送信者・Instance・Scoreboard・Team） | ⬜ | REQ-TEXT-003（v0.2）。Scoreboard・Team は REQ-ENT-004（v0.3） |
 | 9.2 | 登録できる独自の audience | ⬜ | REQ-TEXT-003（v0.2） |
 | 9.3 | まとめ送り（viewer 全員を 1 audience として） | ⬜ | REQ-TEXT-003（v0.2） |
-| 9.4 | Component と色（RGB・alpha・染料） | 🔶 text と style のみ | REQ-TEXT-001（v0.2） |
+| 9.4 | Component と色（RGB・alpha・染料） | ✅ 全種の content・style（RGB・shadow・font）・hover / click・子要素・`+`・`join`（D43）。染料の色は無し | 実クライアントでの表示は利用者に確認を頼む |
 | 9.5 | 変換（plain・legacy・JSON・NBT・ANSI）と MiniMessage | 🔶 NBT の encode のみ | REQ-TEXT-001・002（v0.2）。ANSI と legacy は REQ-TEXT-004（v0.3） |
 | 9.6 | 翻訳（GlobalTranslator・受信者の言語へ自動翻訳） | ⬜ | 別枠（D19） |
 | 9.7 | Component のログ出力 | ⬜ | REQ-TEXT-004（v0.3、ANSI と一緒に） |

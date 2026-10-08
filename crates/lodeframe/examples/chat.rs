@@ -32,7 +32,7 @@ async fn main() -> std::io::Result<()> {
         .run(|registries: &Registries| {
             let mut world = World::new(registries, FlatGenerator::default());
             world.events_mut().on(|e: &mut ChatEvent, ctx: &mut Ctx| {
-                let typed = e.message.text.clone();
+                let typed = e.message.as_text().unwrap_or_default().to_owned();
                 if typed.starts_with(['.', '/']) {
                     e.cancel();
                     let reply =

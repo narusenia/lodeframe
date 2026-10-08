@@ -10,3 +10,7 @@ repository.workspace = true
 [lints]
 workspace = true
 
+
+[dependencies]
+# reads the JSON a component comes in; writing it is by hand
+serde_json.workspace = true

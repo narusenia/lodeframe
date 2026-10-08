@@ -1,6 +1,6 @@
 # Component の完全版 実装計画（M2-11）
 
-> **Status**: 計画 — 2026-10-08
+> **Status**: 実装済み — 2026-10-08
 
 要件: REQ-TEXT-001（v0.2 の項目）。決定: D14・D20・D29 の (3)・D43（[decisions.md](../decisions.md)）。
 `lodeframe-text`・`lodeframe-protocol`・本体にまたがり、公開型（`Component`・`Style`）の形が変わる。M2-12（MiniMessage）・M2-13（`text!`）・M2-14（Audience）・M2-23（コマンド）がこの型の上に載るので、コードの前にここで形を決める。
@@ -23,7 +23,7 @@
 | keybind | `{keybind:"key.jump"}` |
 | score | `{score:{name:"@p", objective:"obj"}}` |
 | selector | `{selector:"@a", separator:", "}`（separator は Component） |
-| nbt | `{nbt:"Health", entity:"@s"}`・`block:"~ ~ ~"`・`storage:"minecraft:x"` のどれか 1 つ、`interpret:1b`、`plain:1b`、`separator` |
+| nbt | `{nbt:"Health", entity:"@s"}`・`block:"~ ~ ~"`・`storage:"minecraft:x"` のどれか 1 つ、`interpret:1b` か `plain:1b`（両方は不可）、`separator` |
 | object（スプライト） | `{sprite:"minecraft:block/stone"}`（atlas が既定のときは省く）、`fallback`（Component） |
 | click | `click_event:{action:"open_url", url}`・`run_command`/`suggest_command` は `command`・`change_page` は `page`（Int）・`copy_to_clipboard` は `value` |
 | hover | `hover_event:{action:"show_text", value}`・`show_item` は `id`・`count`・`show_entity` は `id`・`uuid`（IntArray 4 つ）・`name` |
@@ -36,6 +36,16 @@
 - 色は名前（`red`）か `#RRGGBB`。codec は大文字の 16 進を出すが、クライアントは大文字小文字を区別しない。**書くときは今のまま小文字**にし、読むときは両方を受ける
 
 26.x で増えたもの（`ClickEvent$Custom`・`ShowDialog`、`ObjectContents` のプレイヤーのスプライト）は下の「やらないこと」。
+
+## 1.5 NBT のリストは型が混ざってよい（26.x の形式。実装で見つかった）
+
+`extra: ["b", {bold:1b, text:"c"}]` のように、文字列とコンパウンドが 1 つのリストに混ざる。いまの `Nbt` の書き出しは「型が違う要素」を拒否する。実 codec が出したバイト列で確かめた形:
+
+- 要素の型が揃っていれば、これまでどおり（全部文字列・全部コンパウンド）
+- 揃っていなければ、リストの要素の型を **10（コンパウンド）**にし、コンパウンドでない要素は `{"": 値}`（空のキー 1 つ）に**包んで**書く。コンパウンドの要素はそのまま
+- 読むときは、要素の型が 10 のリストで、**キー `""` が 1 つだけのコンパウンドを中の値に戻す**
+
+`Nbt` 全体の挙動が変わる（レジストリのデータなど他の NBT にも効く）。vanilla の 26.3 と同じなので、そのまま合わせる。既存の「混在を拒否する」テストは、この規則のテストに置き換える。
 
 ## 2. モデル（`lodeframe-text`）
 
@@ -53,10 +63,11 @@ pub enum Content {
     Score { name: String, objective: String },
     Selector { selector: String, separator: Option<Box<Component>> },
     Keybind(String),
-    Nbt { path: String, source: NbtSource, interpret: bool, plain: bool, separator: Option<Box<Component>> },
+    Nbt { path: String, source: NbtSource, mode: NbtMode, separator: Option<Box<Component>> },
     Sprite { atlas: Option<String>, sprite: String, fallback: Option<Box<Component>> },
 }
 pub enum NbtSource { Entity(String), Block(String), Storage(String) }
+pub enum NbtMode { Default, Interpret, Plain }   // codec は interpret と plain の両方 true を拒否する（確認済み）ので、型で排他にした
 
 pub struct Style {          // Clone（Copy ではなくなる）
     pub color: Option<Color>,
@@ -101,7 +112,7 @@ pub enum HoverEvent {
 | NBT → Component | `lodeframe-protocol` の `TryFrom<&Nbt> for Component` と `Decode` | 文字列・コンパウンド・リストを受ける。型の違いはエラー |
 
 - 依存: `lodeframe-text` に **`serde_json`** を足す（読む側だけ。workspace に宣言済みで、本体と xtask がすでに使っており、Cargo.lock にもある。新しく取得するものは無い）。理由: 標準ライブラリに JSON パーサは無く、利用者が渡す JSON（コマンドや設定）を自前のパーサで読むと取りこぼしが出る。MiniMessage（M2-12）も同じ crate に入る。書き出しは手書きのまま
-- **深さの上限**を読む側に置く（rust.md の「再帰とスタック」）: 入れ子（`extra`・`with`・`separator`・`value`・`fallback`）は 64 段まで。`RUST_MIN_STACK=524288` で確かめる。越えたら `Depth` エラー
+- **深さの上限**を読む側に置く（rust.md の「再帰とスタック」）: 入れ子（`extra`・`with`・`separator`・`value`・`fallback`）は **32 段**まで。`serde_json` 自身の上限（128 段。Component 1 段がオブジェクトと配列の 2 段）より手前で自分の上限に当たるようにした（64 段にすると JSON では届かない）。512KB のスタックのスレッドで確かめる。越えたら `TooDeep` エラー
 - 入力に含まれる長さの確保は、残りに照らす（NBT の既存の `check_remaining` に乗る。JSON は `serde_json` がすでに実体を持つので不要）
 - 本体の既存の使い方（`Component::text(..)`・`.color(..)` など）は変わらない。**`text` フィールドを直接読んでいる箇所と、`Style` を `Copy` として使っている箇所**だけを直す
 
@@ -134,7 +145,7 @@ pub enum HoverEvent {
 - JSON を読む `serde_json` は `lodeframe-text` に足す（M2-09 の D40 と同じ理由）
 - 色は書くとき小文字、読むときは両方
 - 数値・真偽値の単独 JSON は拒否（26.3 の codec に合わせる）
-- 深さの上限は 64（実測で確かめ、足りなければ計画に追記）
+- 深さの上限は 32（`serde_json` の 128 段より手前に当たる値。実測で 64 は JSON では届かなかった）
 
 ## やらないこと
 
@@ -156,3 +167,12 @@ pub enum HoverEvent {
 4. 本体・ボット・example・既存のテストを新しい形に直す（`text` フィールド・`Copy`）
 5. 逆向きの確認（Rust → SNBT → Java の codec）
 6. 文書（requirements の受入条件、minestom-parity、architecture、backlog、v0.2-plan）。PR
+
+## 実装の結果
+
+- 正解値: `crates/lodeframe-protocol/tests/component_golden.txt`（30 種。実 codec がネットワーク形式で書いた NBT の 16 進数）。作り方はテストファイルの冒頭に書いた
+- **書いた形が実 codec と一致する**: 30 種すべてで、キーの順と色の大文字小文字を除いて同じ NBT になる
+- **実 codec が読める**（逆向きの確認、2026-10-08）: 30 種の NBT（Rust が書いたバイト列）を `NbtIo.readAnyTag` と `ComponentSerialization.CODEC` で読み、30 種すべて成功。読んだ結果を書き直して読み直した Component も一致
+- 実 codec との突き合わせで直したこと: `interpret` と `plain` の両方 `true` は codec が拒否するので `NbtMode` に変えた／色の名前は小文字だけ受ける／`with` の数値・真偽値は文字として受ける／`change_page` は 1 から
+- 深さの上限は 32（上の「深さ」を参照）
+- 実クライアントでの表示は未確認（利用者に頼む）
