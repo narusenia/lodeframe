@@ -34,7 +34,7 @@
 | 1.6 | Velocity modern forwarding | ✅ `Server::forwarding(Forwarding::Velocity { secret })`。スキンはタブリスト、接続元は `ctx.remote_addr`（実 Velocity 4.2.0 で UUID・名前・接続元・秘密違いの拒否を確認。skin 付きは未確認） | — |
 | 1.7 | BungeeCord / BungeeGuard 転送 | ✅ `Forwarding::BungeeCord { trusted }`・`Forwarding::BungeeGuard { tokens }`（ボットの BungeeCord 役で確認。実 BungeeCord は未確認） | — |
 | 1.8 | HAProxy PROXY protocol v1/v2（任意・必須） | ✅ `Server::proxy_protocol(ProxyProtocol)`（ボットの HAProxy 役で確認。実 HAProxy は未確認） | — |
-| 1.9 | login 段階の plugin message（タイムアウト付き） | 🔶 `login::Queries::ask`（D38）。利用者向けのフックは無い | フックは M2-04（pre-login の async イベント） |
+| 1.9 | login 段階の plugin message（タイムアウト付き） | ✅ `login::Queries::ask`（D38）。利用者向けのフックは `Server::on_login`（D42） | — |
 | 1.10 | サーバー一覧（装飾 MOTD・favicon・プレイヤーサンプル・偽装版・ping の種類を区別するイベント） | 🔶 平文 MOTD・在線人数と最大人数（`Server::max_players`。D37） | 残りは REQ-NET-002（v0.3） |
 | 1.11 | 旧形式（1.6 以下）の ping | ⬜ | REQ-NET-011（v0.8） |
 | 1.12 | ping/pong の遅延・キャンセル | ⬜ | REQ-NET-002（v0.3） |
@@ -165,7 +165,7 @@
 
 | # | Minestom の機能 | lodeframe | 受け皿 |
 |---|---|---|---|
-| 5.1 | 独自の Player と UUID の差し替え | 🔶 利用者データは `ctx.player_data(id)`（D35） | ログイン前の UUID・名前の差し替えは REQ-API-003（v0.2）。クラスの継承は不要（Rust では持たせるデータで足りる） |
+| 5.1 | 独自の Player と UUID の差し替え | ✅ 利用者データは `ctx.player_data(id)`（D35）。ログイン前の UUID・名前・スキンの差し替えは `Server::on_login`（D42） | クラスの継承は不要（Rust では持たせるデータで足りる） |
 | 5.2 | 接続の流れのイベント（pre-login・configuration・spawn・loaded・disconnect） | 🔶 join / leave のみ | pre-login は REQ-API-003（v0.2）、configuration は REQ-NET-010（v0.3）、loaded は REQ-API-005（v0.2） |
 | 5.3 | ゲームモードと変更イベント（F3+F4 を含む） | 🔶 creative 固定 | REQ-PLAYER-001（v0.2） |
 | 5.4 | 能力（飛行・速度・視野・即時破壊・無敵）と飛行のイベント | ⬜ | REQ-PLAYER-001（v0.2） |
