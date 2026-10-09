@@ -12,6 +12,7 @@ use lodeframe::{
     chunk::FlatGenerator,
     registry::Registries,
     server::Server,
+    text,
     text::{Color, Component},
     world::{ChatEvent, Ctx, World},
 };
@@ -35,9 +36,7 @@ async fn main() -> std::io::Result<()> {
                 let typed = e.message.as_text().unwrap_or_default().to_owned();
                 if typed.starts_with(['.', '/']) {
                     e.cancel();
-                    let reply =
-                        Component::text("commands are not supported yet").color(Color::Gray);
-                    ctx.send_message(e.player, &reply);
+                    ctx.send_message(e.player, &text!("<gray>commands are not supported yet"));
                 } else if typed.ends_with('!') {
                     e.message = Component::text(typed).color(Color::Red).bold();
                 }

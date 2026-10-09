@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
-//! Procedural macros: `Encode`/`Decode`, `Packet`, and later `#[command]`, `Event`, `text!`.
+//! Procedural macros: `Encode`/`Decode`, `Packet`, `text!`, and later `#[command]`, `Event`.
 //!
 //! The derives emit paths to `::lodeframe::protocol` by default. Inside the protocol
 //! crate itself, or in a crate that depends on `lodeframe-protocol` directly, add
@@ -7,6 +7,7 @@
 
 mod codec;
 mod packet;
+mod text;
 
 use proc_macro::TokenStream;
 use syn::{DeriveInput, Path, parse_macro_input, parse_quote};
@@ -41,6 +42,30 @@ pub fn derive_decode(input: TokenStream) -> TokenStream {
 pub fn derive_packet(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     packet::expand(&input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// MiniMessage that is checked while compiling: `text!("<red>Hello {name}")` is a `Component`.
+///
+/// The text is read by the same parser as `lodeframe_text::mini::parse`, so a mistake in a tag is
+/// a compile error that says where in the text it is, and what comes out is what the parser
+/// gives at run time.
+///
+/// `{name}` puts in the variable `name` (or `name = expr` after the text), anything that is
+/// `Into<Component>`: a string, a number, a `Component`. It goes in as it is, never read as
+/// tags, so what a user typed is safe. `{{` and `}}` are braces. A placeholder has to be where
+/// text goes: not in the arguments of a tag (`<click:run_command:/msg {name}>`), but it may be
+/// in the quoted text of a hover.
+///
+/// ```ignore
+/// let name = "Alice";
+/// let line = text!("<green>{name}</green> joined, {n} online", n = 3);
+/// ```
+#[proc_macro]
+pub fn text(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as text::Input);
+    text::expand(&input)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

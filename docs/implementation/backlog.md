@@ -94,7 +94,7 @@
 | ✅ | M2-10 | HAProxy PROXY protocol（[計画](haproxy-proxy-protocol-plan.md)） | M2-06 | #44 |
 | ✅ | M2-11 | Component の完全版（[計画](component-plan.md)） | — | #46 |
 | ✅ | M2-12 | MiniMessage（[計画](minimessage-plan.md)） | M2-11 | #47 |
-| ⬜ | M2-13 | `text!` | M2-12 | — |
+| ✅ | M2-13 | `text!`（[計画](text-macro-plan.md)） | M2-12 | #49 |
 | ⬜ | M2-14 | Audience | M2-01, M2-11 | — |
 | 🟡 | M2-15 | プレイヤーの状態 | M2-01 | — |
 | ⬜ | M2-16 | プレイヤーの操作イベント | M2-02, M2-15 | — |

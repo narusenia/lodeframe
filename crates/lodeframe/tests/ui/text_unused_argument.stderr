@@ -1,0 +1,5 @@
+error: `who` is not used in the text: write `{who}` where it goes
+ --> tests/ui/text_unused_argument.rs:3:39
+  |
+3 |     let _ = lodeframe::text!("hello", who = "x");
+  |                                       ^^^

@@ -1,0 +1,7 @@
+error: invalid MiniMessage at byte 24: `{name}` is used 1 time(s) but only 0 end up in the text: a placeholder cannot be inside the arguments of a tag (it can be in the quoted text of a hover)
+         <click:run_command:/msg {name}>go
+                                 ^
+ --> tests/ui/text_placeholder_in_tag_argument.rs:4:30
+  |
+4 |     let _ = lodeframe::text!("<click:run_command:/msg {name}>go");
+  |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

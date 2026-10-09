@@ -560,6 +560,33 @@ impl From<String> for Component {
     }
 }
 
+impl From<&String> for Component {
+    fn from(text: &String) -> Self {
+        Self::text(text.as_str())
+    }
+}
+
+impl From<&Component> for Component {
+    fn from(component: &Component) -> Self {
+        component.clone()
+    }
+}
+
+/// The text a value is shown as: numbers, `bool` and `char` are written the way `Display` does.
+macro_rules! from_display {
+    ($($ty:ty),*) => {$(
+        impl From<$ty> for Component {
+            fn from(value: $ty) -> Self {
+                Self::text(value.to_string())
+            }
+        }
+    )*};
+}
+
+from_display!(
+    i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize, f32, f64, bool, char
+);
+
 /// Puts `rhs` after `self`, side by side. If `self` is only a place for children, `rhs` joins
 /// them; otherwise both become the children of a new one, so that neither takes the style of
 /// the other. `a + b + c` is one level of three.
@@ -686,6 +713,28 @@ impl fmt::Display for Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn values_that_show_as_text_become_components() {
+        assert_eq!(Component::from(3_u8), Component::text("3"));
+        assert_eq!(Component::from(-12_i64), Component::text("-12"));
+        assert_eq!(
+            Component::from(usize::MAX),
+            Component::text(usize::MAX.to_string())
+        );
+        assert_eq!(Component::from(1.5_f64), Component::text("1.5"));
+        assert_eq!(Component::from(true), Component::text("true"));
+        assert_eq!(Component::from('é'), Component::text("é"));
+        let owned = String::from("a");
+        assert_eq!(Component::from(&owned), Component::text("a"));
+        let styled = Component::text("x").bold();
+        assert_eq!(Component::from(&styled), styled);
+        // so that the builders take them too
+        assert_eq!(
+            Component::text("a").append(2),
+            Component::text("a").append(Component::text("2"))
+        );
+    }
 
     #[test]
     fn color_displays_the_game_name() {

@@ -1,0 +1,5 @@
+error: text! expects a string literal first
+ --> tests/ui/text_not_a_literal.rs:4:30
+  |
+4 |     let _ = lodeframe::text!(s);
+  |                              ^
