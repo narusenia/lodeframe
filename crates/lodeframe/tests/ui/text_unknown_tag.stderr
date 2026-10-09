@@ -1,0 +1,7 @@
+error: invalid MiniMessage at byte 11: unknown tag <nope>
+         <red>hello <nope>
+                    ^
+ --> tests/ui/text_unknown_tag.rs:3:30
+  |
+3 |     let _ = lodeframe::text!("<red>hello <nope>");
+  |                              ^^^^^^^^^^^^^^^^^^^

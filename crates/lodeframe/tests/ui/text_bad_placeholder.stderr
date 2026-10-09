@@ -1,0 +1,7 @@
+error: invalid MiniMessage at byte 5: `{0}` is not a variable name: a placeholder is `{name}`, and `{{` is a brace
+         <red>{0}</red>
+              ^
+ --> tests/ui/text_bad_placeholder.rs:3:30
+  |
+3 |     let _ = lodeframe::text!("<red>{0}</red>");
+  |                              ^^^^^^^^^^^^^^^^

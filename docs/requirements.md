@@ -665,8 +665,8 @@ Adventure 相当の層（D19）。Component と MiniMessage は `lodeframe-text`
 
 - `text!("<red>Hello {name}")`。REQ-TEXT-002 と同じパーサをコンパイル時に使う。`{name}` はスコープ内の変数を placeholder として埋め込む。
 - **受入条件**
-  - [ ] タグの誤りがリテラル内の位置を指すコンパイルエラーになる
-  - [ ] 実行時パーサと同じ Component を生成する
+  - [x] タグの誤りがリテラル内の位置を指すコンパイルエラーになる（stable ではリテラルの途中に下線を引けない（`Literal::subspan` は nightly）ので、span はリテラル全体で、**文言にバイト位置・抜粋・印**を入れる。trybuild で確認）
+  - [x] 実行時パーサと同じ Component を生成する（展開が実行時パーサの呼び出しなので構造上同じ。placeholder・gradient・hover の中の placeholder は `parse_with` と等しいことをテスト）
 
 ## PERF
 

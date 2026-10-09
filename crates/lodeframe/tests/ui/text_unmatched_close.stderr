@@ -1,0 +1,7 @@
+error: invalid MiniMessage at byte 17: </bold> has nothing to close
+         <red>two</bold>
+                 ^
+ --> tests/ui/text_unmatched_close.rs:3:30
+  |
+3 |     let _ = lodeframe::text!("one line\n<red>two</bold>");
+  |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^

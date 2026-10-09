@@ -24,5 +24,8 @@ pub mod test_util;
 pub mod world;
 
 pub use lodeframe_macros as macros;
+/// MiniMessage checked while compiling; the same macro as [`macros::text`]. The module of the
+/// same name is [`text`](mod@text): a macro and a module do not clash.
+pub use lodeframe_macros::text;
 pub use lodeframe_protocol as protocol;
 pub use lodeframe_text as text;

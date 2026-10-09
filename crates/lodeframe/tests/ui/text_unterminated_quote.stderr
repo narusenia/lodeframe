@@ -1,0 +1,7 @@
+error: invalid MiniMessage at byte 0: a tag that is not finished
+         <hover:show_text:'abc>x
+         ^
+ --> tests/ui/text_unterminated_quote.rs:3:30
+  |
+3 |     let _ = lodeframe::text!("<hover:show_text:'abc>x");
+  |                              ^^^^^^^^^^^^^^^^^^^^^^^^^
