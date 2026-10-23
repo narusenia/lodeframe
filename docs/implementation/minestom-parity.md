@@ -170,8 +170,8 @@
 | 5.3 | ゲームモードと変更イベント（F3+F4 を含む） | ✅ `set_game_mode`・`GameModeChangedEvent`・F3+F4 の `GameModeRequestEvent`（既定は何もしない）・`default_game_mode`（D47） | — |
 | 5.4 | 能力（飛行・速度・視野・即時破壊・無敵）と飛行のイベント | ✅ `Abilities`・`set_abilities`・`FlyingToggleEvent` | — |
 | 5.5 | 権限レベル（op 0〜4） | ✅ 持ってクライアントに伝える | コマンドの可視性は REQ-API-004（M2-23） |
-| 5.6 | 体力・空腹・経験値 | ⬜ | M2-15b |
-| 5.7 | リスポーン（地点・画面・死亡地点・イベント） | ⬜ | M2-15b |
+| 5.6 | 体力・空腹・経験値 | ✅ 設定と丸め（最大体力は 20 固定。属性は REQ-ENT 側）。自動の回復・飢えは持たない（D48） | 実クライアントでの表示は利用者に確認を頼む |
+| 5.7 | リスポーン（地点・画面・死亡地点・イベント） | ✅ `PlayerDeathEvent`・`PlayerRespawnEvent`・`kill`・`respawn`・`set_respawn_point`・`last_death`・`show_death_screen` | 死亡アニメーションは REQ-ENT 側 |
 | 5.8 | テレポート（相対指定・確認 ID の管理） | ✅ `teleport`（相対・向きの保持・確認までの申告を捨てる）。位置の申告は信じる | 入室時の確認待ちと再送は持たない |
 | 5.9 | 移動・入力・ダッシュ・tick のイベント | ⬜ | REQ-API-005（v0.2） |
 | 5.10 | 観戦・カメラ | ⬜ | REQ-UI-007（v0.7） |

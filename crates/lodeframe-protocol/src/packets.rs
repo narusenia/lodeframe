@@ -604,6 +604,71 @@ pub mod play {
         pub event: u8,
     }
 
+    /// `GameEvent::event` that makes the client respawn at once, without the death screen, when
+    /// the value is 1.0.
+    pub const GAME_EVENT_IMMEDIATE_RESPAWN: u8 = 11;
+
+    /// How many hearts, how much food and how much saturation the player has.
+    #[derive(Debug, Clone, Copy, PartialEq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::SET_HEALTH, state = Play, side = Clientbound)]
+    pub struct SetHealth {
+        /// Health points; 20.0 is ten full hearts.
+        pub health: f32,
+        /// Food level, 0 to 20.
+        pub food: VarInt,
+        /// Saturation, up to the food level.
+        pub saturation: f32,
+    }
+
+    /// The experience bar and level of the player.
+    #[derive(Debug, Clone, Copy, PartialEq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::SET_EXPERIENCE, state = Play, side = Clientbound)]
+    pub struct SetExperience {
+        /// How far to the next level, 0.0 to 1.0.
+        pub progress: f32,
+        /// The level shown.
+        pub level: VarInt,
+        /// All the points the player has earned.
+        pub total: VarInt,
+    }
+
+    /// The player died: the client opens the death screen with `message` on it.
+    #[derive(Debug, Clone, PartialEq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::PLAYER_COMBAT_KILL, state = Play, side = Clientbound)]
+    pub struct PlayerCombatKill {
+        /// The entity id of the player.
+        pub player_id: VarInt,
+        /// The death message.
+        pub message: Component,
+    }
+
+    /// Puts the client into a new world, as after dying. It forgets the chunks and entities it
+    /// had, so they are to be sent again.
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::RESPAWN, state = Play, side = Clientbound)]
+    pub struct Respawn {
+        /// The world and game mode, as in [`Login`].
+        pub spawn: SpawnInfo,
+        /// A bit set of what the client keeps: 1 attributes, 2 entity data. 0 keeps nothing.
+        pub data_kept: u8,
+    }
+
+    /// [`ClientCommand::action`] of the respawn button on the death screen.
+    pub const CLIENT_COMMAND_PERFORM_RESPAWN: i32 = 0;
+
+    /// The client asks for something: to respawn, or for its statistics or the game rules.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::serverbound::CLIENT_COMMAND, state = Play, side = Serverbound)]
+    pub struct ClientCommand {
+        /// 0 respawn, 1 statistics, 2 game rule values.
+        pub action: VarInt,
+    }
+
     /// `GameEvent::event` that ends the "loading terrain" screen.
     pub const LEVEL_CHUNKS_LOAD_START: u8 = 13;
 
@@ -2005,6 +2070,76 @@ mod tests {
                 value: 3.0
             }),
             [3, 0x40, 0x40, 0, 0]
+        );
+    }
+
+    #[test]
+    fn vitals_packets_match_the_vanilla_encoding() {
+        fn bytes<T: Encode>(v: T) -> Vec<u8> {
+            let mut b = Vec::new();
+            v.encode(&mut b).unwrap();
+            b
+        }
+        assert_eq!(
+            bytes(SetHealth {
+                health: 20.0,
+                food: VarInt(18),
+                saturation: 5.0
+            }),
+            [0x41, 0xa0, 0, 0, 18, 0x40, 0xa0, 0, 0]
+        );
+        // the bar, then the level, then the points: not the order of the vanilla constructor
+        assert_eq!(
+            bytes(SetExperience {
+                progress: 0.5,
+                level: VarInt(5),
+                total: VarInt(300)
+            }),
+            [0x3f, 0, 0, 0, 5, 0xac, 0x02]
+        );
+        assert_eq!(
+            bytes(PlayerCombatKill {
+                player_id: VarInt(7),
+                message: Component::text("hi")
+            }),
+            [7, 8, 0, 2, b'h', b'i']
+        );
+        assert_eq!(bytes(ClientCommand { action: VarInt(0) }), [0]);
+        roundtrip(ClientCommand {
+            action: VarInt(CLIENT_COMMAND_PERFORM_RESPAWN),
+        });
+        let spawn = SpawnInfo {
+            dimension_type: VarInt(1),
+            dimension: Identifier::new("minecraft:overworld").unwrap(),
+            seed: 0,
+            game_mode: VarInt(2),
+            previous_game_mode: VarInt(0),
+            is_debug: false,
+            is_flat: true,
+            last_death: None,
+            portal_cooldown: VarInt(0),
+            sea_level: VarInt(63),
+        };
+        // the spawn info as `Login` has it, then what is kept
+        let mut expected = bytes(spawn.clone());
+        expected.push(0);
+        assert_eq!(
+            bytes(Respawn {
+                spawn: spawn.clone(),
+                data_kept: 0
+            }),
+            expected
+        );
+        roundtrip(Respawn {
+            spawn,
+            data_kept: 3,
+        });
+        assert_eq!(
+            bytes(GameEvent {
+                event: GAME_EVENT_IMMEDIATE_RESPAWN,
+                value: 1.0
+            }),
+            [11, 0x3f, 0x80, 0, 0]
         );
     }
 
