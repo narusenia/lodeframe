@@ -546,6 +546,64 @@ pub mod play {
         pub teleport_id: VarInt,
     }
 
+    /// `GameEvent::event` that changes the game mode of the player; the value is its id.
+    pub const GAME_EVENT_CHANGE_GAME_MODE: u8 = 3;
+
+    /// [`PlayerAbilities::flags`] and [`ServerboundPlayerAbilities::flags`]: the player cannot
+    /// be hurt.
+    pub const ABILITY_INVULNERABLE: u8 = 1;
+    /// The player is flying.
+    pub const ABILITY_FLYING: u8 = 2;
+    /// The player may start flying.
+    pub const ABILITY_ALLOW_FLYING: u8 = 4;
+    /// The player breaks blocks at once.
+    pub const ABILITY_INSTANT_BREAK: u8 = 8;
+
+    /// What the player may do: fly, break blocks at once, take no damage, and how fast.
+    #[derive(Debug, Clone, Copy, PartialEq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::PLAYER_ABILITIES, state = Play, side = Clientbound)]
+    pub struct PlayerAbilities {
+        /// A bit set of the `ABILITY_*` constants.
+        pub flags: u8,
+        /// How fast the player flies; 0.05 is the usual.
+        pub fly_speed: f32,
+        /// The walking speed the client shows as the field of view; 0.1 is the usual.
+        pub walk_speed: f32,
+    }
+
+    /// The client starts or stops flying. Only [`ABILITY_FLYING`] is sent.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::serverbound::PLAYER_ABILITIES, state = Play, side = Serverbound)]
+    pub struct ServerboundPlayerAbilities {
+        /// A bit set; only [`ABILITY_FLYING`] is used.
+        pub flags: u8,
+    }
+
+    /// The client asks for another game mode (F3+F4).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::serverbound::CHANGE_GAME_MODE, state = Play, side = Serverbound)]
+    pub struct ChangeGameMode {
+        /// 0 survival, 1 creative, 2 adventure, 3 spectator.
+        pub mode: VarInt,
+    }
+
+    /// `EntityEvent::event` for the permission level 0; add the level (0 to 4) for the others.
+    pub const ENTITY_EVENT_PERMISSION_LEVEL: u8 = 24;
+
+    /// Something happens to an entity, like the permission level the client shows for the player.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::ENTITY_EVENT, state = Play, side = Clientbound)]
+    pub struct EntityEvent {
+        /// The entity. A plain `i32`, not a `VarInt`.
+        pub entity_id: i32,
+        /// Which event.
+        pub event: u8,
+    }
+
     /// `GameEvent::event` that ends the "loading terrain" screen.
     pub const LEVEL_CHUNKS_LOAD_START: u8 = 13;
 
@@ -670,6 +728,40 @@ pub mod play {
         pub listed: bool,
         /// Ping in milliseconds.
         pub latency: VarInt,
+    }
+
+    /// Changes the game mode of players in the tab list. The action set is fixed: game mode.
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::PLAYER_INFO_UPDATE, state = Play, side = Clientbound)]
+    pub struct PlayerInfoGameMode {
+        /// The action bit mask; [`PlayerInfoGameMode::ACTIONS`] for what this type sends.
+        pub actions: u8,
+        /// The players and their modes.
+        pub players: Vec<GameModeEntry>,
+    }
+
+    impl PlayerInfoGameMode {
+        /// Game mode (bit 2).
+        pub const ACTIONS: u8 = 0b100;
+
+        /// A packet that gives each of `players` its mode.
+        pub fn new(players: Vec<GameModeEntry>) -> Self {
+            Self {
+                actions: Self::ACTIONS,
+                players,
+            }
+        }
+    }
+
+    /// One tab list entry of [`PlayerInfoGameMode`].
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+    #[lodeframe(crate = crate)]
+    pub struct GameModeEntry {
+        /// The player.
+        pub uuid: Uuid,
+        /// 0 survival, 1 creative, 2 adventure, 3 spectator.
+        pub game_mode: VarInt,
     }
 
     /// Removes players from the tab list.
@@ -1863,6 +1955,56 @@ mod tests {
                 operation: BossEventOperation::UpdateFlags(flags)
             }),
             with(&[5, 5])
+        );
+    }
+
+    #[test]
+    fn player_state_packets_match_the_vanilla_encoding() {
+        fn bytes<T: Encode>(v: T) -> Vec<u8> {
+            let mut b = Vec::new();
+            v.encode(&mut b).unwrap();
+            b
+        }
+        // flags, then two floats
+        assert_eq!(
+            bytes(PlayerAbilities {
+                flags: ABILITY_ALLOW_FLYING | ABILITY_INSTANT_BREAK,
+                fly_speed: 0.05,
+                walk_speed: 0.1,
+            }),
+            [12, 0x3d, 0x4c, 0xcc, 0xcd, 0x3d, 0xcc, 0xcc, 0xcd]
+        );
+        roundtrip(ServerboundPlayerAbilities {
+            flags: ABILITY_FLYING,
+        });
+        assert_eq!(bytes(ServerboundPlayerAbilities { flags: 2 }), [2]);
+        assert_eq!(bytes(ChangeGameMode { mode: VarInt(3) }), [3]);
+        roundtrip(ChangeGameMode { mode: VarInt(1) });
+        // the entity is a plain int, the event a byte
+        assert_eq!(
+            bytes(EntityEvent {
+                entity_id: 7,
+                event: ENTITY_EVENT_PERMISSION_LEVEL + 2
+            }),
+            [0, 0, 0, 7, 26]
+        );
+        let uuid = Uuid(0x0102030405060708_090a0b0c0d0e0f10);
+        let mut expected = vec![4, 1];
+        expected.extend(uuid.0.to_be_bytes());
+        expected.push(2);
+        assert_eq!(
+            bytes(PlayerInfoGameMode::new(vec![GameModeEntry {
+                uuid,
+                game_mode: VarInt(2)
+            }])),
+            expected
+        );
+        assert_eq!(
+            bytes(GameEvent {
+                event: GAME_EVENT_CHANGE_GAME_MODE,
+                value: 3.0
+            }),
+            [3, 0x40, 0x40, 0, 0]
         );
     }
 

@@ -14,6 +14,7 @@ pub mod instance;
 pub mod login;
 pub mod net;
 pub mod play;
+pub mod player;
 mod proxy_protocol;
 pub mod registry;
 pub mod schedule;

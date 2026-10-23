@@ -15,6 +15,7 @@ use crate::{
     instance::PluginMessage,
     instance::{Instance, Message, Packets, Sessions},
     login::Profile,
+    player::{Abilities, FlyingToggleEvent, GameMode, GameModeRequestEvent},
     protocol::{
         BlockPos, BlockState, Decode, Direction, Identifier, Packet, Result, Uuid, VarInt, Vec3,
         block::{AIR, STONE},
@@ -25,15 +26,17 @@ use crate::{
             configuration::BRAND_CHANNEL,
             login::ProfileProperty,
             play::{
-                ACTION_START_DESTROY_BLOCK, AddEntity, BlockChangedAck, BlockUpdate, Chat,
-                ChunkBatchFinished, ChunkBatchStart, ClientboundCustomPayload, Disconnect,
-                DisguisedChat, EntityPositionSync, FLAG_SNEAKING, ForgetLevelChunk, GameEvent,
-                INPUT_SNEAK, LEVEL_CHUNKS_LOAD_START, Login, MOVE_UNITS_PER_BLOCK, MoveEntityPos,
-                MoveEntityPosRot, MoveEntityRot, MovePlayerPos, MovePlayerPosRot, MovePlayerRot,
-                MovePlayerStatusOnly, ON_GROUND, POSE_CROUCHING, PlayerAction, PlayerInfo,
-                PlayerInfoAdd, PlayerInfoRemove, PlayerInput, PlayerPosition, RemoveEntities,
-                RotateHead, ServerboundCustomPayload, SetChunkCacheCenter, SetEntityFlagsAndPose,
-                SpawnInfo, UseItemOn, angle,
+                ABILITY_FLYING, ACTION_START_DESTROY_BLOCK, AcceptTeleportation, AddEntity,
+                BlockChangedAck, BlockUpdate, ChangeGameMode, Chat, ChunkBatchFinished,
+                ChunkBatchStart, ClientboundCustomPayload, Disconnect, DisguisedChat,
+                ENTITY_EVENT_PERMISSION_LEVEL, EntityEvent, EntityPositionSync, FLAG_SNEAKING,
+                ForgetLevelChunk, GameEvent, INPUT_SNEAK, LEVEL_CHUNKS_LOAD_START, Login,
+                MOVE_UNITS_PER_BLOCK, MoveEntityPos, MoveEntityPosRot, MoveEntityRot,
+                MovePlayerPos, MovePlayerPosRot, MovePlayerRot, MovePlayerStatusOnly, ON_GROUND,
+                POSE_CROUCHING, PlayerAction, PlayerInfo, PlayerInfoAdd, PlayerInfoRemove,
+                PlayerInput, PlayerPosition, RemoveEntities, RotateHead, ServerboundCustomPayload,
+                ServerboundPlayerAbilities, SetChunkCacheCenter, SetEntityFlagsAndPose, SpawnInfo,
+                UseItemOn, angle,
             },
         },
         split_packet_id,
@@ -45,6 +48,7 @@ use crate::{
 };
 
 mod send;
+mod state;
 
 const DIMENSION: &str = "minecraft:overworld";
 const DIMENSION_TYPES: &str = "minecraft:dimension_type";
@@ -350,6 +354,15 @@ struct Player {
     properties: Vec<ProfileProperty>,
     // the address the proxy said the client connected from
     remote_addr: Option<IpAddr>,
+    game_mode: GameMode,
+    abilities: Abilities,
+    // op level 0 to 4
+    permission_level: u8,
+    // the id the next teleport gets
+    next_teleport: i32,
+    // the last teleport the client has not confirmed; while there is one, the positions it sends
+    // are from before the teleport and are dropped
+    awaiting_teleport: Option<i32>,
 }
 
 impl Player {
@@ -358,8 +371,7 @@ impl Player {
             uuid,
             name: self.name.clone(),
             properties: self.properties.clone(),
-            // creative, as in `send_join`
-            game_mode: VarInt(1),
+            game_mode: VarInt(i32::from(self.game_mode.id())),
             listed: true,
             latency: VarInt(0),
         }
@@ -498,6 +510,9 @@ pub struct Ctx {
     /// At most [`view_distance`](Self::view_distance) counts, since there is no ground beyond it.
     /// Set it before players join.
     pub entity_view_distance: u32,
+    /// The game mode players join in, which decides what they can do from the start. Change a
+    /// player's with [`set_game_mode`](Self::set_game_mode).
+    pub default_game_mode: GameMode,
     chunks: Chunks<DynLoader>,
     // the packets of the chunks that were sent, by position; dropped when a block changes
     chunk_packets: HashMap<ChunkPos, Vec<u8>>,
@@ -535,6 +550,7 @@ impl Ctx {
             view_distance: 8,
             chunks_per_tick: 8,
             entity_view_distance: 5,
+            default_game_mode: GameMode::default(),
             chunks: Chunks::new(DynLoader(loader)),
             chunk_packets: HashMap::new(),
             sessions: Sessions::default(),
@@ -759,7 +775,7 @@ impl Ctx {
         let id = profile.uuid;
         if self.players.contains_key(&id) {
             // the same player logged in again: the old connection goes, as in the game
-            self.kick(id, "You logged in from another location");
+            self.disconnect(id, "You logged in from another location");
         }
         self.sessions.join(id, outbound);
         self.next_entity_id += 1;
@@ -792,6 +808,12 @@ impl Ctx {
                 .and_then(|m| String::decode(&mut m.data.as_slice()).ok()),
             properties: profile.properties,
             remote_addr: profile.remote_addr,
+            game_mode: self.default_game_mode,
+            abilities: Abilities::for_mode(self.default_game_mode),
+            permission_level: 0,
+            // 1 went with the join
+            next_teleport: 2,
+            awaiting_teleport: None,
         };
         if self.send_join(id, &player, entity_id).is_err() {
             self.sessions.leave(id);
@@ -867,8 +889,7 @@ impl Ctx {
                 dimension_type: VarInt(self.dimension_type + 1),
                 dimension,
                 seed: 0,
-                // creative: a flat lobby has nothing to survive
-                game_mode: VarInt(1),
+                game_mode: VarInt(i32::from(player.game_mode.id())),
                 previous_game_mode: VarInt(0),
                 is_debug: false,
                 is_flat: true,
@@ -903,6 +924,14 @@ impl Ctx {
             &SetChunkCacheCenter {
                 x: VarInt(player.chunk.x),
                 z: VarInt(player.chunk.z),
+            },
+        )?;
+        self.send(id, &player.abilities.packet())?;
+        self.send(
+            id,
+            &EntityEvent {
+                entity_id,
+                event: ENTITY_EVENT_PERMISSION_LEVEL + player.permission_level,
             },
         )
     }
@@ -991,12 +1020,26 @@ impl Ctx {
                 let sneaking = PlayerInput::decode(&mut payload)?.flags & INPUT_SNEAK != 0;
                 return self.set_sneaking(id, sneaking);
             }
-            // commands, teleport and batch answers, ...: nothing to do yet
+            ids::play::serverbound::ACCEPT_TELEPORTATION => {
+                let teleport = AcceptTeleportation::decode(&mut payload)?.teleport_id.0;
+                // only the last teleport counts; an older or unknown id changes nothing
+                if let Some(player) = self.players.get_mut(&id)
+                    && player.awaiting_teleport == Some(teleport)
+                {
+                    player.awaiting_teleport = None;
+                }
+                return Ok(());
+            }
+            // commands and batch answers, ...: nothing to do yet
             _ => return Ok(()),
         };
         let Some(player) = self.players.get_mut(&id) else {
             return Ok(());
         };
+        // what the client sends before it has confirmed a teleport is where it was
+        if player.awaiting_teleport.is_some() {
+            return Ok(());
+        }
         player.on_ground = flags & ON_GROUND != 0;
         let moved = position.is_some_and(|p| p != player.pos)
             || rotation.is_some_and(|r| r != (player.yaw, player.pitch));
@@ -1011,6 +1054,12 @@ impl Ctx {
         if moved && !std::mem::replace(&mut player.moved, true) {
             self.movers.push(id);
         }
+        self.follow_chunks(id)
+    }
+
+    /// Sends and forgets the chunks of a player whose position moved to another chunk, and
+    /// updates who sees whom.
+    fn follow_chunks(&mut self, id: Uuid) -> Result<()> {
         let Some(player) = self.players.get_mut(&id) else {
             return Ok(());
         };
@@ -1103,12 +1152,12 @@ impl Ctx {
 
     /// Tells `id` why they are being disconnected, then removes them as if they had left. Their
     /// connection ends once it has written the message.
-    fn kick(&mut self, id: Uuid, reason: &str) {
-        self.kick_with(id, Component::text(reason));
+    fn disconnect(&mut self, id: Uuid, reason: &str) {
+        self.disconnect_with(id, Component::text(reason));
     }
 
-    /// Like [`kick`](Self::kick), with a styled `reason`.
-    fn kick_with(&mut self, id: Uuid, reason: Component) {
+    /// Like [`disconnect`](Self::disconnect), with a styled `reason`.
+    fn disconnect_with(&mut self, id: Uuid, reason: Component) {
         if let Ok(body) = packet_body(&Disconnect { reason }) {
             self.sessions.send(id, body);
         }
@@ -1487,6 +1536,15 @@ impl World {
                 self.player_action(id, PlayerAction::decode(&mut payload)?)
             }
             ids::play::serverbound::USE_ITEM_ON => self.place(id, UseItemOn::decode(&mut payload)?),
+            ids::play::serverbound::CHANGE_GAME_MODE => {
+                let request = ChangeGameMode::decode(&mut payload)?;
+                self.game_mode_request(id, request.mode.0);
+                Ok(())
+            }
+            ids::play::serverbound::PLAYER_ABILITIES => {
+                let flags = ServerboundPlayerAbilities::decode(&mut payload)?.flags;
+                self.flying_toggle(id, flags & ABILITY_FLYING != 0)
+            }
             ids::play::serverbound::CUSTOM_PAYLOAD => {
                 let message = ServerboundCustomPayload::decode(&mut payload)?;
                 if let Some(player) = self.ctx.player_id(id) {
@@ -1517,6 +1575,9 @@ impl World {
             return Ok(());
         };
         let pos = action.pos;
+        if !self.can_edit_blocks(id) {
+            return self.ctx.finish_edit(id, pos, false, action.sequence);
+        }
         let mut changed = false;
         if let Some(block) = self.ctx.block(pos).filter(|b| *b != AIR.default_state()) {
             let mut event = BlockBreakEvent {
@@ -1530,6 +1591,47 @@ impl World {
         self.ctx.finish_edit(id, pos, changed, action.sequence)
     }
 
+    /// Whether the game mode of `id` lets them break and place blocks. Adventure and spectator
+    /// do not; a player who is gone does not either.
+    fn can_edit_blocks(&self, id: Uuid) -> bool {
+        self.ctx
+            .players
+            .get(&id)
+            .is_some_and(|p| p.game_mode.can_edit_blocks())
+    }
+
+    /// A player pressed F3+F4. Nothing changes unless a handler changes it.
+    fn game_mode_request(&mut self, id: Uuid, mode: i32) {
+        let (Some(player), Some(mode)) = (self.ctx.player_id(id), GameMode::from_id(mode)) else {
+            return;
+        };
+        self.emit(&mut GameModeRequestEvent { player, mode });
+    }
+
+    /// A player started or stopped flying. They may, if they are allowed and no handler said no;
+    /// otherwise the client is told what it has.
+    fn flying_toggle(&mut self, id: Uuid, flying: bool) -> Result<()> {
+        let Some(player) = self.ctx.player_id(id) else {
+            return Ok(());
+        };
+        let mut event = FlyingToggleEvent {
+            player,
+            flying,
+            cancelled: false,
+        };
+        let cancelled = self.emit(&mut event);
+        let Some(p) = self.ctx.players.get_mut(&id) else {
+            return Ok(());
+        };
+        // landing is always allowed, taking off needs the ability
+        if !cancelled && (!flying || p.abilities.allow_flying) {
+            p.abilities.flying = flying;
+            return Ok(());
+        }
+        let packet = p.abilities.packet();
+        self.ctx.send(id, &packet)
+    }
+
     fn place(&mut self, id: Uuid, click: UseItemOn) -> Result<()> {
         let Some(player) = self.ctx.player_id(id) else {
             return Ok(());
@@ -1537,9 +1639,10 @@ impl World {
         // ponytail: any hand places; reach, collision and what is already there are not checked
         let mut changed = false;
         let mut pos = click.pos;
+        let may = self.can_edit_blocks(id);
         if let Some(face) = Direction::from_id(click.face.0) {
             pos = click.pos.offset(face);
-            if self.ctx.block(pos).is_some() {
+            if may && self.ctx.block(pos).is_some() {
                 let mut event = BlockPlaceEvent {
                     player,
                     pos,
@@ -1606,7 +1709,7 @@ impl Instance for World {
         self.settle();
         let players: Vec<Uuid> = self.ctx.players.keys().copied().collect();
         for id in players {
-            self.ctx.kick_with(id, event.reason.clone());
+            self.ctx.disconnect_with(id, event.reason.clone());
         }
         self.settle();
     }
