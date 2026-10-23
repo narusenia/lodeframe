@@ -3,6 +3,7 @@
 //!
 //! This crate is the facade: it re-exports the other lodeframe crates.
 
+pub mod audience;
 pub mod chunk;
 pub mod clock;
 pub mod configuration;
@@ -23,9 +24,15 @@ pub mod task;
 pub mod test_util;
 pub mod world;
 
+pub use audience::{
+    Audience, AudienceExt, BossBar, BossBarColor, BossBarFlags, BossBarId, BossBarOverlay,
+    Everyone, Group, Named, Sound, SoundSource, StopSound, Title, TitleTimes, from_fn,
+};
 pub use lodeframe_macros as macros;
 /// MiniMessage checked while compiling; the same macro as [`macros::text`]. The module of the
 /// same name is [`text`](mod@text): a macro and a module do not clash.
 pub use lodeframe_macros::text;
 pub use lodeframe_protocol as protocol;
+/// The sounds of the game, like `sound::ENTITY_PLAYER_LEVELUP`, for [`Sound::new`].
+pub use lodeframe_protocol::sound_event as sound;
 pub use lodeframe_text as text;

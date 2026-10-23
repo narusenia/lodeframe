@@ -66,7 +66,7 @@
 | 2.3 | vanilla 分を除いた registry の送信 | ✅ | — |
 | 2.4 | 実行中の registry 登録・削除 | 🔶 起動前の `Registries::set` のみ | REQ-PROTO-006（v0.3） |
 | 2.5〜2.19 | 型付きの registry 値（dimension type・biome・damage type・chat type・banner・trim・enchantment と効果部品・painting・jukebox song・instrument・mob の variant・dialog・timeline / world clock・sulfur cube archetype・component predicate） | 🔶 32 種を名前で扱う。値を組み立てる型が無い | REQ-PROTO-006（v0.3） |
-| 2.20 | 静的 registry（block・item・potion effect・potion type・entity type・fluid・game event・game rule・particle・sound 等） | 🔶 block と entity type のみ | 使う REQ で順に生成（item は REQ-ENT-003、potion は REQ-ENT-009、particle は REQ-WORLD-014、sound は REQ-TEXT-003、game rule は REQ-WORLD-013） |
+| 2.20 | 静的 registry（block・item・potion effect・potion type・entity type・fluid・game event・game rule・particle・sound 等） | 🔶 block・entity type・sound event | 使う REQ で順に生成（item は REQ-ENT-003、potion は REQ-ENT-009、particle は REQ-WORLD-014、game rule は REQ-WORLD-013） |
 | 2.21 | tags（型・実行中の変更と再送） | 🔶 起動時の送信のみ | REQ-PROTO-006（v0.3） |
 | 2.22 | feature flags の設定 | 🔶 `minecraft:vanilla` 固定 | REQ-NET-010（v0.3） |
 | 2.23 | DataPack の概念（core / 名前なし） | 🔶 core のみ | REQ-PROTO-006（v0.3） |
@@ -189,10 +189,10 @@
 | 5.22 | ブロック操作のイベント（採掘の開始・中断・完了、ピック） | 🔶 破壊と設置のみ | REQ-API-005（v0.2） |
 | 5.23 | エンティティ操作のイベント（操作・攻撃・槍・腕振り） | ⬜ | REQ-API-005（v0.2） |
 | 5.24 | 持ち替え・ドロップ・スロット選択 | ⬜ | REQ-API-005（v0.2） |
-| 5.25 | ボスバー | ⬜ | REQ-TEXT-003（v0.2） |
+| 5.25 | ボスバー | ✅ 作成・表示・非表示・タイトル・進捗・色・overlay・フラグの更新（D46） | 実クライアントでの表示は利用者に確認を頼む |
 | 5.26 | スコアボード（サイドバー・名前の下・タブリストの objective・チーム） | ⬜ | REQ-ENT-004（v0.3） |
-| 5.27 | タイトル・actionbar | ⬜ | REQ-TEXT-003（v0.2） |
-| 5.28 | タブリスト（ヘッダー/フッター・表示可否・並び順・表示名・遅延） | 🔶 全員を載せるのみ、遅延 0 | ヘッダー/フッターは REQ-TEXT-003（v0.2）、残りは REQ-PLAYER-002（v0.3） |
+| 5.27 | タイトル・actionbar | ✅ | — |
+| 5.28 | タブリスト（ヘッダー/フッター・表示可否・並び順・表示名・遅延） | 🔶 ヘッダー/フッター（`set_tab_list`）。行は全員を載せるのみ、遅延 0 | 残りは REQ-PLAYER-002（v0.3） |
 | 5.29 | スキン（Mojang から取得・接続時のイベント・`setSkin`） | ⬜ properties が空 | REQ-PLAYER-003（v0.3） |
 | 5.30 | サウンド（再生・停止・独自音・自分以外へ） | ⬜ | REQ-TEXT-003（v0.2） |
 | 5.31 | パーティクル | ⬜ | REQ-WORLD-014（v0.6） |
@@ -272,15 +272,15 @@
 
 | # | Minestom の機能 | lodeframe | 受け皿 |
 |---|---|---|---|
-| 9.1 | Audience（Player・送信者・Instance・Scoreboard・Team） | ⬜ | REQ-TEXT-003（v0.2）。Scoreboard・Team は REQ-ENT-004（v0.3） |
-| 9.2 | 登録できる独自の audience | ⬜ | REQ-TEXT-003（v0.2） |
-| 9.3 | まとめ送り（viewer 全員を 1 audience として） | ⬜ | REQ-TEXT-003（v0.2） |
+| 9.1 | Audience（Player・送信者・Instance・Scoreboard・Team） | 🔶 `PlayerId`・`Everyone`（Instance 全員）・`Group`・1 人を除く・和集合・スライス（D46） | Scoreboard・Team は REQ-ENT-004（v0.3）、送信者は未 |
+| 9.2 | 登録できる独自の audience | ✅ `Audience` を実装するか `from_fn`、`Ctx::register_audience` で key 登録 | — |
+| 9.3 | まとめ送り（viewer 全員を 1 audience として） | ✅ 1 回の encode を全員へ（BossBar の閲覧者も 1 つの宛先） | — |
 | 9.4 | Component と色（RGB・alpha・染料） | ✅ 全種の content・style（RGB・shadow・font）・hover / click・子要素・`+`・`join`（D43）。染料の色は無し | 実クライアントでの表示は利用者に確認を頼む |
 | 9.5 | 変換（plain・legacy・JSON・NBT・ANSI）と MiniMessage | 🔶 JSON・NBT・MiniMessage（読み書き） | plain・legacy・ANSI は REQ-TEXT-004（v0.3）。色の式は Adventure のソースに合わせたが、実行しての比較は未 |
 | 9.6 | 翻訳（GlobalTranslator・受信者の言語へ自動翻訳） | ⬜ | 別枠（D19） |
 | 9.7 | Component のログ出力 | ⬜ | REQ-TEXT-004（v0.3、ANSI と一緒に） |
 | 9.8 | hover でのアイテム表示 | ⬜ | REQ-UI-009（v0.7） |
-| 9.9 | タイトル・actionbar・ボスバー・サウンド・本・リソースパック・タブリスト | ⬜ | REQ-TEXT-003（v0.2）、本は REQ-UI-005、リソースパックは REQ-NET-008、タブリストは REQ-PLAYER-002 |
+| 9.9 | タイトル・actionbar・ボスバー・サウンド・本・リソースパック・タブリスト | 🔶 タイトル（時間指定）・actionbar・ボスバー・サウンド（位置・カテゴリ・停止）・タブリストのヘッダー/フッター | 本は REQ-UI-005、リソースパックは REQ-NET-008、エンティティから鳴らす sound は M2-17 の後、タブリストの行は REQ-PLAYER-002 |
 
 ## 10. その他
 

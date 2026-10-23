@@ -8,6 +8,7 @@ use std::{
 };
 
 use crate::{
+    audience::Audiences,
     chunk::{Chunk, ChunkLoader, ChunkPos, ChunkTracker, Chunks, HEIGHT, MIN_Y},
     data::Data,
     event::{ChildId, Event, EventNode, Listener, ListenerId, Parents},
@@ -32,7 +33,7 @@ use crate::{
                 MovePlayerStatusOnly, ON_GROUND, POSE_CROUCHING, PlayerAction, PlayerInfo,
                 PlayerInfoAdd, PlayerInfoRemove, PlayerInput, PlayerPosition, RemoveEntities,
                 RotateHead, ServerboundCustomPayload, SetChunkCacheCenter, SetEntityFlagsAndPose,
-                SpawnInfo, SystemChat, UseItemOn, angle,
+                SpawnInfo, UseItemOn, angle,
             },
         },
         split_packet_id,
@@ -42,6 +43,8 @@ use crate::{
     task::Tasks,
     text::Component,
 };
+
+mod send;
 
 const DIMENSION: &str = "minecraft:overworld";
 const DIMENSION_TYPES: &str = "minecraft:dimension_type";
@@ -515,6 +518,8 @@ pub struct Ctx {
     deferred: VecDeque<Deferred>,
     pub(crate) tasks: Tasks,
     pub(crate) scheduler: Scheduler,
+    // the groups, the audiences registered by key and the boss bars
+    audiences: Audiences,
     data: Data,
     // the data of players who left, until their `PlayerLeaveEvent` has been handled
     leaving: HashMap<PlayerId, Data>,
@@ -547,6 +552,7 @@ impl Ctx {
             deferred: VecDeque::new(),
             tasks: Tasks::new(),
             scheduler: Scheduler::default(),
+            audiences: Audiences::default(),
             data: Data::default(),
             leaving: HashMap::new(),
         }
@@ -739,34 +745,6 @@ impl Ctx {
         self.chunk_packets.remove(&at);
         self.send_in_view(at, body);
         true
-    }
-
-    /// Shows `message` to one player in the chat. Does nothing if they are gone.
-    pub fn send_message(&mut self, player: PlayerId, message: &Component) {
-        if !self.is_online(player) {
-            return;
-        }
-        let player = player.uuid;
-        let Ok(body) = packet_body(&SystemChat {
-            content: message.clone(),
-            overlay: false,
-        }) else {
-            return;
-        };
-        if self.send_body(player, body).is_err() {
-            self.leave(player);
-        }
-    }
-
-    /// Shows `message` to everyone in the chat.
-    pub fn broadcast(&mut self, message: &Component) {
-        let Ok(body) = packet_body(&SystemChat {
-            content: message.clone(),
-            overlay: false,
-        }) else {
-            return;
-        };
-        self.send_many(None, body);
     }
 
     /// Brings a player in as far as the others knowing of them. Returns the event for it, or
@@ -1364,6 +1342,7 @@ impl Ctx {
             uuid: id,
             serial: player.serial,
         };
+        self.audiences.forget(id);
         self.cancel_tasks_of(gone);
         self.leaving.insert(gone, player.data);
         // the handlers hear of it once `World` is done with what it was doing

@@ -57,7 +57,7 @@ pub struct PlayerId { uuid: Uuid, serial: u64 }
 |---|---|---|
 | ハンドラの中での `ctx.emit` と、木へのハンドラ追加 | `Ctx` が木を持たないので、遅延キューが要る。優先度・条件と同じ設計で足す | M2-02 |
 | `ctx.spawn` | tokio との接続が要る | M2-03 |
-| 全員へ送る・1 人を除いて送る | Audience の設計と一緒に | M2-14（D29 の (5)） |
+| 全員へ送る・1 人を除いて送る | Audience の設計と一緒に | M2-14（D29 の (5)）。**解消**: `Everyone.except(player)`（[計画](audience-plan.md)） |
 | `PlayerId` からプレイヤーの位置などを読む API | 使う単位（M2-15・M2-16）で足す | M2-15 |
 | 公開型 `World<L>` との互換 | v0.0.0 で未公開。移行の手間を取らない | — |
 
