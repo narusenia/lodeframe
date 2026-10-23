@@ -15,7 +15,10 @@ use crate::{
     instance::PluginMessage,
     instance::{Instance, Message, Packets, Sessions},
     login::Profile,
-    player::{Abilities, FlyingToggleEvent, GameMode, GameModeRequestEvent},
+    player::{
+        Abilities, Experience, FlyingToggleEvent, GameMode, GameModeRequestEvent, MAX_FOOD,
+        MAX_HEALTH, PlayerRespawnEvent, RESPAWN_SATURATION, RespawnPoint,
+    },
     protocol::{
         BlockPos, BlockState, Decode, Direction, Identifier, Packet, Result, Uuid, VarInt, Vec3,
         block::{AIR, STONE},
@@ -27,16 +30,17 @@ use crate::{
             login::ProfileProperty,
             play::{
                 ABILITY_FLYING, ACTION_START_DESTROY_BLOCK, AcceptTeleportation, AddEntity,
-                BlockChangedAck, BlockUpdate, ChangeGameMode, Chat, ChunkBatchFinished,
-                ChunkBatchStart, ClientboundCustomPayload, Disconnect, DisguisedChat,
-                ENTITY_EVENT_PERMISSION_LEVEL, EntityEvent, EntityPositionSync, FLAG_SNEAKING,
-                ForgetLevelChunk, GameEvent, INPUT_SNEAK, LEVEL_CHUNKS_LOAD_START, Login,
+                BlockChangedAck, BlockUpdate, CLIENT_COMMAND_PERFORM_RESPAWN, ChangeGameMode, Chat,
+                ChunkBatchFinished, ChunkBatchStart, ClientCommand, ClientboundCustomPayload,
+                Disconnect, DisguisedChat, ENTITY_EVENT_PERMISSION_LEVEL, EntityEvent,
+                EntityPositionSync, FLAG_SNEAKING, ForgetLevelChunk, GAME_EVENT_IMMEDIATE_RESPAWN,
+                GameEvent, GlobalPos, INPUT_SNEAK, LEVEL_CHUNKS_LOAD_START, Login,
                 MOVE_UNITS_PER_BLOCK, MoveEntityPos, MoveEntityPosRot, MoveEntityRot,
                 MovePlayerPos, MovePlayerPosRot, MovePlayerRot, MovePlayerStatusOnly, ON_GROUND,
                 POSE_CROUCHING, PlayerAction, PlayerInfo, PlayerInfoAdd, PlayerInfoRemove,
                 PlayerInput, PlayerPosition, RemoveEntities, RotateHead, ServerboundCustomPayload,
-                ServerboundPlayerAbilities, SetChunkCacheCenter, SetEntityFlagsAndPose, SpawnInfo,
-                UseItemOn, angle,
+                ServerboundPlayerAbilities, SetChunkCacheCenter, SetEntityFlagsAndPose,
+                SetExperience, SetHealth, SpawnInfo, UseItemOn, angle,
             },
         },
         split_packet_id,
@@ -49,6 +53,7 @@ use crate::{
 
 mod send;
 mod state;
+mod vitals;
 
 const DIMENSION: &str = "minecraft:overworld";
 const DIMENSION_TYPES: &str = "minecraft:dimension_type";
@@ -363,6 +368,15 @@ struct Player {
     // the last teleport the client has not confirmed; while there is one, the positions it sends
     // are from before the teleport and are dropped
     awaiting_teleport: Option<i32>,
+    health: f32,
+    food: i32,
+    saturation: f32,
+    experience: Experience,
+    // dead players are on the death screen: nobody sees them and what they send is dropped
+    dead: bool,
+    // where they come back, or the spawn of the world
+    respawn_point: Option<RespawnPoint>,
+    last_death: Option<Vec3>,
 }
 
 impl Player {
@@ -374,6 +388,22 @@ impl Player {
             game_mode: VarInt(i32::from(self.game_mode.id())),
             listed: true,
             latency: VarInt(0),
+        }
+    }
+
+    fn health_packet(&self) -> SetHealth {
+        SetHealth {
+            health: self.health,
+            food: VarInt(self.food),
+            saturation: self.saturation,
+        }
+    }
+
+    fn experience_packet(&self) -> SetExperience {
+        SetExperience {
+            progress: self.experience.progress,
+            level: VarInt(self.experience.level),
+            total: VarInt(self.experience.total),
         }
     }
 
@@ -513,6 +543,9 @@ pub struct Ctx {
     /// The game mode players join in, which decides what they can do from the start. Change a
     /// player's with [`set_game_mode`](Self::set_game_mode).
     pub default_game_mode: GameMode,
+    /// Whether a player who dies gets the death screen. If `false` their client respawns at once,
+    /// as with the game rule `doImmediateRespawn`. Set it before players join.
+    pub show_death_screen: bool,
     chunks: Chunks<DynLoader>,
     // the packets of the chunks that were sent, by position; dropped when a block changes
     chunk_packets: HashMap<ChunkPos, Vec<u8>>,
@@ -551,6 +584,7 @@ impl Ctx {
             chunks_per_tick: 8,
             entity_view_distance: 5,
             default_game_mode: GameMode::default(),
+            show_death_screen: true,
             chunks: Chunks::new(DynLoader(loader)),
             chunk_packets: HashMap::new(),
             sessions: Sessions::default(),
@@ -814,6 +848,13 @@ impl Ctx {
             // 1 went with the join
             next_teleport: 2,
             awaiting_teleport: None,
+            health: MAX_HEALTH,
+            food: MAX_FOOD,
+            saturation: RESPAWN_SATURATION,
+            experience: Experience::default(),
+            dead: false,
+            respawn_point: None,
+            last_death: None,
         };
         if self.send_join(id, &player, entity_id).is_err() {
             self.sessions.leave(id);
@@ -872,6 +913,30 @@ impl Ctx {
         }
     }
 
+    /// Where and in what mode a client is put, for the login and the respawn.
+    fn spawn_info(&self, player: &Player) -> Result<SpawnInfo> {
+        Ok(SpawnInfo {
+            // the wire id is the registry id plus one; 0 would mean an inline value
+            dimension_type: VarInt(self.dimension_type + 1),
+            dimension: Identifier::new(DIMENSION)?,
+            seed: 0,
+            game_mode: VarInt(i32::from(player.game_mode.id())),
+            previous_game_mode: VarInt(0),
+            is_debug: false,
+            is_flat: true,
+            last_death: player.last_death.map(|at| GlobalPos {
+                dimension: Identifier::new(DIMENSION).expect("a fixed valid name"),
+                pos: BlockPos::new(
+                    at.x.floor() as i32,
+                    at.y.floor() as i32,
+                    at.z.floor() as i32,
+                ),
+            }),
+            portal_cooldown: VarInt(0),
+            sea_level: VarInt(63),
+        })
+    }
+
     fn send_join(&mut self, id: Uuid, player: &Player, entity_id: i32) -> Result<()> {
         let dimension = Identifier::new(DIMENSION)?;
         let login = Login {
@@ -882,21 +947,9 @@ impl Ctx {
             view_distance: VarInt(self.view_distance as i32),
             simulation_distance: VarInt(self.view_distance as i32),
             reduced_debug_info: false,
-            show_death_screen: true,
+            show_death_screen: self.show_death_screen,
             limited_crafting: false,
-            spawn: SpawnInfo {
-                // the wire id is the registry id plus one; 0 would mean an inline value
-                dimension_type: VarInt(self.dimension_type + 1),
-                dimension,
-                seed: 0,
-                game_mode: VarInt(i32::from(player.game_mode.id())),
-                previous_game_mode: VarInt(0),
-                is_debug: false,
-                is_flat: true,
-                last_death: None,
-                portal_cooldown: VarInt(0),
-                sea_level: VarInt(63),
-            },
+            spawn: self.spawn_info(player)?,
             online_mode: false,
             enforces_secure_chat: false,
         };
@@ -933,7 +986,19 @@ impl Ctx {
                 entity_id,
                 event: ENTITY_EVENT_PERMISSION_LEVEL + player.permission_level,
             },
-        )
+        )?;
+        self.send(id, &player.health_packet())?;
+        self.send(id, &player.experience_packet())?;
+        if !self.show_death_screen {
+            self.send(
+                id,
+                &GameEvent {
+                    event: GAME_EVENT_IMMEDIATE_RESPAWN,
+                    value: 1.0,
+                },
+            )?;
+        }
+        Ok(())
     }
 
     /// The packet that shows the chunk at `pos`, encoded the first time and kept until a block in
@@ -1036,8 +1101,9 @@ impl Ctx {
         let Some(player) = self.players.get_mut(&id) else {
             return Ok(());
         };
-        // what the client sends before it has confirmed a teleport is where it was
-        if player.awaiting_teleport.is_some() {
+        // what the client sends before it has confirmed a teleport is where it was, and a dead
+        // player is not going anywhere
+        if player.awaiting_teleport.is_some() || player.dead {
             return Ok(());
         }
         player.on_ground = flags & ON_GROUND != 0;
@@ -1258,10 +1324,12 @@ impl Ctx {
         };
         let (centre, range) = (me.chunk, self.entity_range());
         let before = me.visible.clone();
+        // nobody sees a dead player, and they see nobody
+        let me_dead = me.dead;
         let now: HashSet<Uuid> = self
             .players
             .iter()
-            .filter(|(u, p)| **u != id && p.chunk.distance(centre) <= range)
+            .filter(|(u, p)| **u != id && !me_dead && !p.dead && p.chunk.distance(centre) <= range)
             .map(|(u, _)| *u)
             .collect();
         let (entering, leaving): (Vec<Uuid>, Vec<Uuid>) = (
@@ -1541,6 +1609,13 @@ impl World {
                 self.game_mode_request(id, request.mode.0);
                 Ok(())
             }
+            ids::play::serverbound::CLIENT_COMMAND => {
+                let command = ClientCommand::decode(&mut payload)?;
+                if command.action.0 == CLIENT_COMMAND_PERFORM_RESPAWN {
+                    self.respawn_request(id)?;
+                }
+                Ok(())
+            }
             ids::play::serverbound::PLAYER_ABILITIES => {
                 let flags = ServerboundPlayerAbilities::decode(&mut payload)?.flags;
                 self.flying_toggle(id, flags & ABILITY_FLYING != 0)
@@ -1597,7 +1672,7 @@ impl World {
         self.ctx
             .players
             .get(&id)
-            .is_some_and(|p| p.game_mode.can_edit_blocks())
+            .is_some_and(|p| !p.dead && p.game_mode.can_edit_blocks())
     }
 
     /// A player pressed F3+F4. Nothing changes unless a handler changes it.
@@ -1606,6 +1681,36 @@ impl World {
             return;
         };
         self.emit(&mut GameModeRequestEvent { player, mode });
+    }
+
+    /// A dead player pressed respawn: they come back with what the handlers leave in the event,
+    /// unless one cancels it.
+    fn respawn_request(&mut self, id: Uuid) -> Result<()> {
+        let Some(player) = self.ctx.player_id(id) else {
+            return Ok(());
+        };
+        if !self.ctx.players.get(&id).is_some_and(|p| p.dead) {
+            return Ok(());
+        }
+        let point = self
+            .ctx
+            .respawn_point(player)
+            .unwrap_or(RespawnPoint::new(self.ctx.spawn));
+        let mut event = PlayerRespawnEvent {
+            player,
+            position: point.position,
+            yaw: point.yaw,
+            pitch: point.pitch,
+            health: MAX_HEALTH,
+            food: MAX_FOOD,
+            saturation: RESPAWN_SATURATION,
+            cancelled: false,
+        };
+        if self.emit(&mut event) {
+            return Ok(());
+        }
+        self.ctx.respawn_to(player, &event);
+        Ok(())
     }
 
     /// A player started or stopped flying. They may, if they are allowed and no handler said no;

@@ -11,6 +11,7 @@ use crate::{
             PlayerAbilities,
         },
     },
+    text::Component,
     world::{PlayerEvent, PlayerId},
 };
 
@@ -223,6 +224,150 @@ impl FlyingToggleEvent {
     }
 }
 
+/// The most health a player has: ten hearts.
+pub const MAX_HEALTH: f32 = 20.0;
+/// The most food a player has: ten drumsticks.
+pub const MAX_FOOD: i32 = 20;
+/// The saturation a player has at full food after respawning.
+pub const RESPAWN_SATURATION: f32 = 5.0;
+
+/// A player's experience: the level on the bar, how far it is to the next, and the points
+/// earned in all. See [`Ctx::set_experience`](crate::world::Ctx::set_experience).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Experience {
+    /// The level shown, 0 or more.
+    pub level: i32,
+    /// How far to the next level, 0.0 to 1.0.
+    pub progress: f32,
+    /// All the points earned, which the death screen shows as the score.
+    pub total: i32,
+}
+
+impl Experience {
+    /// Points to get from `level` to the next one, by the game's rule.
+    fn cost(level: i64) -> i64 {
+        match level {
+            ..=15 => 2 * level + 7,
+            16..=30 => 5 * level - 38,
+            _ => 9 * level - 158,
+        }
+    }
+
+    /// Points it takes to reach `level` from nothing.
+    fn points_for(level: i64) -> i64 {
+        (0..level).map(Self::cost).sum()
+    }
+
+    /// `level` and how far `progress` (0.0 to 1.0) is to the next, with the points that makes.
+    pub fn new(level: i32, progress: f32) -> Self {
+        let level = level.max(0);
+        let progress = if progress.is_finite() {
+            progress.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let level_points = Self::points_for(i64::from(level));
+        let into = (f64::from(progress) * Self::cost(i64::from(level)) as f64).round() as i64;
+        Self {
+            level,
+            progress,
+            total: i32::try_from(level_points + into).unwrap_or(i32::MAX),
+        }
+    }
+
+    /// The level and progress that `points` come to, by the game's rule: 7 points reach level
+    /// 1, 37 more from level 15 reach 16, 112 more from level 30 reach 31.
+    pub fn from_points(points: i32) -> Self {
+        let total = points.max(0);
+        let mut level = 0;
+        let mut left = i64::from(total);
+        while left >= Self::cost(level) {
+            left -= Self::cost(level);
+            level += 1;
+        }
+        Self {
+            level: i32::try_from(level).unwrap_or(i32::MAX),
+            progress: (left as f64 / Self::cost(level) as f64) as f32,
+            total,
+        }
+    }
+
+    /// The same, brought into what the client takes: a level of 0 or more, a progress from 0.0 to
+    /// 1.0 (not a number is 0.0), points of 0 or more.
+    pub(crate) fn clamped(self) -> Self {
+        Self {
+            level: self.level.max(0),
+            progress: if self.progress.is_finite() {
+                self.progress.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
+            total: self.total.max(0),
+        }
+    }
+}
+
+/// Where a player comes back after dying, and which way they face.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RespawnPoint {
+    /// The place.
+    pub position: Vec3,
+    /// Degrees around the y axis.
+    pub yaw: f32,
+    /// Degrees up and down.
+    pub pitch: f32,
+}
+
+impl RespawnPoint {
+    /// At `position`, facing yaw 0 and pitch 0.
+    pub fn new(position: Vec3) -> Self {
+        Self {
+            position,
+            yaw: 0.0,
+            pitch: 0.0,
+        }
+    }
+}
+
+/// A player died, by [`Ctx::kill`](crate::world::Ctx::kill) or by their health falling to 0.
+/// The death screen is open; they come back after [`PlayerRespawnEvent`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerDeathEvent {
+    /// Who died.
+    pub player: PlayerId,
+    /// The death message on the screen.
+    pub message: Component,
+}
+
+/// A dead player pressed respawn. What they come back with is in the fields, which a handler
+/// may change; the player respawns unless it is cancelled, and then stays dead (their client
+/// lets them press it again).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerRespawnEvent {
+    /// Who respawns.
+    pub player: PlayerId,
+    /// Where. The player's [respawn point](crate::world::Ctx::respawn_point) to begin with.
+    pub position: Vec3,
+    /// Degrees around the y axis.
+    pub yaw: f32,
+    /// Degrees up and down.
+    pub pitch: f32,
+    /// Health points, full to begin with.
+    pub health: f32,
+    /// Food level, full to begin with.
+    pub food: i32,
+    /// Saturation, 5.0 to begin with.
+    pub saturation: f32,
+    pub(crate) cancelled: bool,
+}
+
+impl PlayerRespawnEvent {
+    /// Keeps the player dead.
+    pub fn cancel(&mut self) {
+        self.cancelled = true;
+    }
+}
+
 macro_rules! player_event {
     ($($event:ty),*) => {$(
         impl PlayerEvent for $event {
@@ -235,7 +380,9 @@ macro_rules! player_event {
 player_event!(
     GameModeRequestEvent,
     GameModeChangedEvent,
-    FlyingToggleEvent
+    FlyingToggleEvent,
+    PlayerDeathEvent,
+    PlayerRespawnEvent
 );
 
 impl Event for GameModeRequestEvent {
@@ -251,6 +398,22 @@ impl Event for GameModeChangedEvent {
 }
 
 impl Event for FlyingToggleEvent {
+    fn is_cancelled(&self) -> bool {
+        self.cancelled
+    }
+
+    fn parents<C: 'static>(&mut self, parents: &mut Parents<'_, C>) {
+        parents.visit::<dyn PlayerEvent>(self);
+    }
+}
+
+impl Event for PlayerDeathEvent {
+    fn parents<C: 'static>(&mut self, parents: &mut Parents<'_, C>) {
+        parents.visit::<dyn PlayerEvent>(self);
+    }
+}
+
+impl Event for PlayerRespawnEvent {
     fn is_cancelled(&self) -> bool {
         self.cancelled
     }

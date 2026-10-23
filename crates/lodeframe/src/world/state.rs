@@ -19,14 +19,14 @@ use crate::{
 const MAX_PERMISSION_LEVEL: u8 = 4;
 
 impl Ctx {
-    fn resolve_mut(&mut self, id: PlayerId) -> Option<&mut Player> {
+    pub(super) fn resolve_mut(&mut self, id: PlayerId) -> Option<&mut Player> {
         self.players
             .get_mut(&id.uuid)
             .filter(|p| p.serial == id.serial)
     }
 
     /// Sends `packet` to one player, dropping them if they cannot take it.
-    fn tell<P: Packet + crate::protocol::Encode>(&mut self, player: Uuid, packet: &P) {
+    pub(super) fn tell<P: Packet + crate::protocol::Encode>(&mut self, player: Uuid, packet: &P) {
         if self.send(player, packet).is_err() {
             self.leave(player);
         }
