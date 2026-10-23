@@ -5,5 +5,6 @@ pub mod blocks;
 pub mod datapack_registries;
 pub mod entity_types;
 pub mod packet_ids;
+pub mod sound_events;
 pub mod tags;
 pub mod version;

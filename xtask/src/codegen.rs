@@ -35,6 +35,7 @@ pub fn generate(input: &Input) -> Result<Vec<(&'static str, String)>> {
         ("packet_ids.rs", packet_ids(&input.packets)?),
         ("blocks.rs", blocks(&input.blocks, &input.registries)?),
         ("entity_types.rs", entity_types(&input.registries)?),
+        ("sound_events.rs", sound_events(&input.registries)?),
         (
             "datapack_registries.rs",
             datapack_registries(&input.datapack_registries)?,
@@ -306,6 +307,28 @@ fn entity_types(registries: &Value) -> Result<String> {
             return Err(format!("{other} and {name} are both {konst}").into());
         }
         writeln!(out, "pub const {konst}: EntityType = EntityType({id});")?;
+    }
+    Ok(out)
+}
+
+fn sound_events(registries: &Value) -> Result<String> {
+    let names = registry_names(registries, "minecraft:sound_event")?;
+    let mut out = String::from(HEADER);
+    out.push_str("use crate::sound_event::SoundEvent;\n\n");
+    let list: Vec<String> = names.iter().map(|n| format!("{n:?}")).collect();
+    writeln!(
+        out,
+        "pub static SOUND_EVENT_NAMES: [&str; {}] = [{}];\n",
+        names.len(),
+        list.join(", ")
+    )?;
+    let mut seen = HashMap::new();
+    for (id, name) in names.iter().enumerate() {
+        let konst = const_name(name)?;
+        if let Some(other) = seen.insert(konst.clone(), name) {
+            return Err(format!("{other} and {name} are both {konst}").into());
+        }
+        writeln!(out, "pub const {konst}: SoundEvent = SoundEvent({id});")?;
     }
     Ok(out)
 }

@@ -958,6 +958,345 @@ pub mod play {
         pub overlay: bool,
     }
 
+    /// The big text in the middle of the screen. Sent after [`SetSubtitleText`] and
+    /// [`SetTitlesAnimation`], since it is what makes the title show.
+    #[derive(Debug, Clone, PartialEq, Encode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::SET_TITLE_TEXT, state = Play, side = Clientbound)]
+    pub struct SetTitleText {
+        /// The text.
+        pub text: Component,
+    }
+
+    /// The smaller text under the title. It shows when the title does.
+    #[derive(Debug, Clone, PartialEq, Encode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::SET_SUBTITLE_TEXT, state = Play, side = Clientbound)]
+    pub struct SetSubtitleText {
+        /// The text.
+        pub text: Component,
+    }
+
+    /// The text above the hotbar.
+    #[derive(Debug, Clone, PartialEq, Encode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::SET_ACTION_BAR_TEXT, state = Play, side = Clientbound)]
+    pub struct SetActionBarText {
+        /// The text.
+        pub text: Component,
+    }
+
+    /// How long the title fades in, stays and fades out, in ticks. The client keeps these until
+    /// they are sent again or [`ClearTitles`] resets them (10, 70 and 20 to begin with).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::SET_TITLES_ANIMATION, state = Play, side = Clientbound)]
+    pub struct SetTitlesAnimation {
+        /// Ticks to fade in. A plain `int`, not a `VarInt`.
+        pub fade_in: i32,
+        /// Ticks to stay.
+        pub stay: i32,
+        /// Ticks to fade out.
+        pub fade_out: i32,
+    }
+
+    /// Takes the title away, and with `reset` also the subtitle and the times.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::CLEAR_TITLES, state = Play, side = Clientbound)]
+    pub struct ClearTitles {
+        /// Whether to forget the subtitle and the times as well.
+        pub reset: bool,
+    }
+
+    /// The text above and below the player list.
+    #[derive(Debug, Clone, PartialEq, Encode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::TAB_LIST, state = Play, side = Clientbound)]
+    pub struct TabList {
+        /// Above the list. An empty component shows nothing.
+        pub header: Component,
+        /// Below the list.
+        pub footer: Component,
+    }
+
+    /// What a sound is: one in the sound event registry, or one the client is told by name (a
+    /// sound of a resource pack).
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum SoundHolder {
+        /// A sound event of the registry.
+        Registered(crate::SoundEvent),
+        /// A sound named on the wire, with how far it can be heard if that is fixed.
+        Direct {
+            /// The sound's name, like `my_pack:boom`.
+            name: Identifier,
+            /// The distance in blocks the sound is heard from, or `None` for the usual one that
+            /// grows with the volume.
+            fixed_range: Option<f32>,
+        },
+    }
+
+    impl Encode for SoundHolder {
+        /// A `VarInt` that is the registry id plus one, or 0 and then the sound itself.
+        fn encode(&self, w: &mut impl std::io::Write) -> crate::Result<()> {
+            match self {
+                Self::Registered(event) => VarInt(i32::from(event.id()) + 1).encode(w),
+                Self::Direct { name, fixed_range } => {
+                    VarInt(0).encode(w)?;
+                    name.encode(w)?;
+                    fixed_range.encode(w)
+                }
+            }
+        }
+    }
+
+    /// The volume slider a sound is played under.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub enum SoundSource {
+        /// The master volume.
+        #[default]
+        Master,
+        /// Music.
+        Music,
+        /// Jukeboxes and note blocks.
+        Records,
+        /// Rain and thunder.
+        Weather,
+        /// Blocks.
+        Blocks,
+        /// Hostile mobs.
+        Hostile,
+        /// Friendly mobs.
+        Neutral,
+        /// Players.
+        Players,
+        /// Ambient sounds.
+        Ambient,
+        /// Voices.
+        Voice,
+        /// The interface.
+        Ui,
+    }
+
+    impl SoundSource {
+        /// Every source, in the order the client numbers them.
+        pub const ALL: [Self; 11] = [
+            Self::Master,
+            Self::Music,
+            Self::Records,
+            Self::Weather,
+            Self::Blocks,
+            Self::Hostile,
+            Self::Neutral,
+            Self::Players,
+            Self::Ambient,
+            Self::Voice,
+            Self::Ui,
+        ];
+    }
+
+    impl Encode for SoundSource {
+        fn encode(&self, w: &mut impl std::io::Write) -> crate::Result<()> {
+            VarInt(*self as i32).encode(w)
+        }
+    }
+
+    /// Plays a sound at a place. The place is rounded to an eighth of a block.
+    #[derive(Debug, Clone, PartialEq, Encode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::SOUND, state = Play, side = Clientbound)]
+    pub struct Sound {
+        /// What to play.
+        pub sound: SoundHolder,
+        /// The volume slider it is under.
+        pub source: SoundSource,
+        /// The x coordinate times 8.
+        pub x: i32,
+        /// The y coordinate times 8.
+        pub y: i32,
+        /// The z coordinate times 8.
+        pub z: i32,
+        /// 1.0 is the usual volume; more carries further, not louder.
+        pub volume: f32,
+        /// 1.0 is the usual pitch; the client takes 0.5 to 2.0.
+        pub pitch: f32,
+        /// Picks which of the sound's variants plays; the same seed gives the same one.
+        pub seed: i64,
+    }
+
+    /// Stops sounds that are playing. With neither field set it stops them all.
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::STOP_SOUND, state = Play, side = Clientbound)]
+    pub struct StopSound {
+        /// Only the sounds under this slider.
+        pub source: Option<SoundSource>,
+        /// Only the sound with this name.
+        pub name: Option<Identifier>,
+    }
+
+    impl Encode for StopSound {
+        /// A flags byte (1: there is a source, 2: there is a name), then those that are there.
+        fn encode(&self, w: &mut impl std::io::Write) -> crate::Result<()> {
+            let flags = u8::from(self.source.is_some()) | (u8::from(self.name.is_some()) << 1);
+            flags.encode(w)?;
+            if let Some(source) = &self.source {
+                source.encode(w)?;
+            }
+            if let Some(name) = &self.name {
+                name.encode(w)?;
+            }
+            Ok(())
+        }
+    }
+
+    /// The colour of a boss bar.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub enum BossBarColor {
+        /// Pink.
+        #[default]
+        Pink,
+        /// Blue.
+        Blue,
+        /// Red.
+        Red,
+        /// Green.
+        Green,
+        /// Yellow.
+        Yellow,
+        /// Purple.
+        Purple,
+        /// White.
+        White,
+    }
+
+    /// How a boss bar is drawn: whole, or cut into notches.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub enum BossBarOverlay {
+        /// No notches.
+        #[default]
+        Progress,
+        /// 6 notches.
+        Notched6,
+        /// 10 notches.
+        Notched10,
+        /// 12 notches.
+        Notched12,
+        /// 20 notches.
+        Notched20,
+    }
+
+    /// [`BossBarFlags::bits`] for a boss bar that darkens the sky.
+    pub const BOSS_BAR_DARKEN_SKY: u8 = 1;
+    /// [`BossBarFlags::bits`] for a boss bar that plays the boss music.
+    pub const BOSS_BAR_PLAY_MUSIC: u8 = 2;
+    /// [`BossBarFlags::bits`] for a boss bar that makes the fog thicker.
+    pub const BOSS_BAR_CREATE_FOG: u8 = 4;
+
+    /// What a boss bar does to the world around the player.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct BossBarFlags {
+        /// Darkens the sky.
+        pub darken_sky: bool,
+        /// Plays the boss music.
+        pub play_music: bool,
+        /// Makes the fog thicker.
+        pub create_fog: bool,
+    }
+
+    impl BossBarFlags {
+        /// The flags as the byte of the packet.
+        pub fn bits(self) -> u8 {
+            (u8::from(self.darken_sky) * BOSS_BAR_DARKEN_SKY)
+                | (u8::from(self.play_music) * BOSS_BAR_PLAY_MUSIC)
+                | (u8::from(self.create_fog) * BOSS_BAR_CREATE_FOG)
+        }
+    }
+
+    /// What a [`BossEvent`] does to the bar.
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum BossEventOperation {
+        /// Shows a new bar.
+        Add {
+            /// The title above the bar.
+            title: Component,
+            /// How full the bar is, 0.0 to 1.0.
+            progress: f32,
+            /// The colour.
+            color: BossBarColor,
+            /// How it is cut into notches.
+            overlay: BossBarOverlay,
+            /// What it does to the world.
+            flags: BossBarFlags,
+        },
+        /// Takes the bar away.
+        Remove,
+        /// Changes how full it is.
+        UpdateProgress(f32),
+        /// Changes the title.
+        UpdateTitle(Component),
+        /// Changes the colour and the notches.
+        UpdateStyle {
+            /// The colour.
+            color: BossBarColor,
+            /// How it is cut into notches.
+            overlay: BossBarOverlay,
+        },
+        /// Changes what it does to the world.
+        UpdateFlags(BossBarFlags),
+    }
+
+    impl Encode for BossEventOperation {
+        /// A `VarInt` for which operation, then what it carries.
+        fn encode(&self, w: &mut impl std::io::Write) -> crate::Result<()> {
+            match self {
+                Self::Add {
+                    title,
+                    progress,
+                    color,
+                    overlay,
+                    flags,
+                } => {
+                    VarInt(0).encode(w)?;
+                    title.encode(w)?;
+                    progress.encode(w)?;
+                    VarInt(*color as i32).encode(w)?;
+                    VarInt(*overlay as i32).encode(w)?;
+                    flags.bits().encode(w)
+                }
+                Self::Remove => VarInt(1).encode(w),
+                Self::UpdateProgress(progress) => {
+                    VarInt(2).encode(w)?;
+                    progress.encode(w)
+                }
+                Self::UpdateTitle(title) => {
+                    VarInt(3).encode(w)?;
+                    title.encode(w)
+                }
+                Self::UpdateStyle { color, overlay } => {
+                    VarInt(4).encode(w)?;
+                    VarInt(*color as i32).encode(w)?;
+                    VarInt(*overlay as i32).encode(w)
+                }
+                Self::UpdateFlags(flags) => {
+                    VarInt(5).encode(w)?;
+                    flags.bits().encode(w)
+                }
+            }
+        }
+    }
+
+    /// Shows, changes or takes away a boss bar at the top of the screen.
+    #[derive(Debug, Clone, PartialEq, Encode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::clientbound::BOSS_EVENT, state = Play, side = Clientbound)]
+    pub struct BossEvent {
+        /// Which bar. The client keeps a bar per id.
+        pub id: Uuid,
+        /// What to do to it.
+        pub operation: BossEventOperation,
+    }
+
     /// [`PlayerAction::action`] when the player starts digging a block. In creative mode that
     /// already breaks it.
     pub const ACTION_START_DESTROY_BLOCK: i32 = 0;
@@ -1319,6 +1658,212 @@ mod tests {
         .encode(&mut buf)
         .unwrap();
         assert_eq!(buf, [8, 0, 2, b'h', b'i', 1, 8, 0, 1, b'a', 0]);
+    }
+
+    #[test]
+    fn screen_text_packets_match_the_vanilla_encoding() {
+        fn bytes<T: Encode>(v: T) -> Vec<u8> {
+            let mut b = Vec::new();
+            v.encode(&mut b).unwrap();
+            b
+        }
+        let hi = [8, 0, 2, b'h', b'i'];
+        let a = [8, 0, 1, b'a'];
+        assert_eq!(
+            bytes(SetTitleText {
+                text: Component::text("hi")
+            }),
+            hi
+        );
+        assert_eq!(
+            bytes(SetSubtitleText {
+                text: Component::text("hi")
+            }),
+            hi
+        );
+        assert_eq!(
+            bytes(SetActionBarText {
+                text: Component::text("hi")
+            }),
+            hi
+        );
+        // three plain ints, not VarInts
+        assert_eq!(
+            bytes(SetTitlesAnimation {
+                fade_in: 10,
+                stay: 70,
+                fade_out: 20
+            }),
+            [0, 0, 0, 10, 0, 0, 0, 70, 0, 0, 0, 20]
+        );
+        assert_eq!(bytes(ClearTitles { reset: true }), [1]);
+        assert_eq!(bytes(ClearTitles { reset: false }), [0]);
+        assert_eq!(
+            bytes(TabList {
+                header: Component::text("hi"),
+                footer: Component::text("a"),
+            }),
+            [hi.as_slice(), a.as_slice()].concat()
+        );
+    }
+
+    #[test]
+    fn sound_packets_match_the_vanilla_encoding() {
+        fn bytes<T: Encode>(v: T) -> Vec<u8> {
+            let mut b = Vec::new();
+            v.encode(&mut b).unwrap();
+            b
+        }
+        // registered: the id plus one; a registry id of 1321 is 1322 as a VarInt
+        let levelup = crate::sound_event::ENTITY_PLAYER_LEVELUP;
+        assert_eq!(levelup.id(), 1321);
+        assert_eq!(
+            bytes(SoundHolder::Registered(levelup)),
+            [0xaa, 0x0a],
+            "1322 as a VarInt"
+        );
+        // direct: 0, the name, whether the range is fixed (and what it is)
+        let name = Identifier::new("pack:boom").unwrap();
+        let mut expected = vec![0, 9];
+        expected.extend(b"pack:boom");
+        expected.push(0);
+        assert_eq!(
+            bytes(SoundHolder::Direct {
+                name: name.clone(),
+                fixed_range: None
+            }),
+            expected
+        );
+        let mut expected = vec![0, 9];
+        expected.extend(b"pack:boom");
+        expected.extend([1, 0x41, 0x20, 0, 0]);
+        assert_eq!(
+            bytes(SoundHolder::Direct {
+                name,
+                fixed_range: Some(10.0)
+            }),
+            expected
+        );
+        assert_eq!(
+            bytes(Sound {
+                sound: SoundHolder::Registered(levelup),
+                source: SoundSource::Players,
+                x: 8,
+                y: -16,
+                z: 0,
+                volume: 1.0,
+                pitch: 0.5,
+                seed: 7,
+            }),
+            [
+                0xaa, 0x0a, // sound
+                7,    // source: players
+                0, 0, 0, 8, 0xff, 0xff, 0xff, 0xf0, 0, 0, 0, 0, // x, y, z
+                0x3f, 0x80, 0, 0, 0x3f, 0, 0, 0, // volume, pitch
+                0, 0, 0, 0, 0, 0, 0, 7, // seed
+            ]
+        );
+        for (i, source) in SoundSource::ALL.iter().enumerate() {
+            assert_eq!(bytes(*source), [i as u8]);
+        }
+        let name = Identifier::new("a:b").unwrap();
+        assert_eq!(
+            bytes(StopSound {
+                source: None,
+                name: None
+            }),
+            [0]
+        );
+        assert_eq!(
+            bytes(StopSound {
+                source: Some(SoundSource::Music),
+                name: None
+            }),
+            [1, 1]
+        );
+        assert_eq!(
+            bytes(StopSound {
+                source: None,
+                name: Some(name.clone())
+            }),
+            [2, 3, b'a', b':', b'b']
+        );
+        assert_eq!(
+            bytes(StopSound {
+                source: Some(SoundSource::Ui),
+                name: Some(name)
+            }),
+            [3, 10, 3, b'a', b':', b'b']
+        );
+    }
+
+    #[test]
+    fn boss_event_operations_match_the_vanilla_encoding() {
+        fn bytes<T: Encode>(v: T) -> Vec<u8> {
+            let mut b = Vec::new();
+            v.encode(&mut b).unwrap();
+            b
+        }
+        let id = Uuid(0x0102030405060708_090a0b0c0d0e0f10);
+        let head: Vec<u8> = id.0.to_be_bytes().to_vec();
+        let with = |tail: &[u8]| [head.as_slice(), tail].concat();
+        let flags = BossBarFlags {
+            darken_sky: true,
+            play_music: false,
+            create_fog: true,
+        };
+        assert_eq!(flags.bits(), 5);
+        assert_eq!(
+            bytes(BossEvent {
+                id,
+                operation: BossEventOperation::Add {
+                    title: Component::text("hi"),
+                    progress: 0.5,
+                    color: BossBarColor::Green,
+                    overlay: BossBarOverlay::Notched10,
+                    flags,
+                }
+            }),
+            with(&[0, 8, 0, 2, b'h', b'i', 0x3f, 0, 0, 0, 3, 2, 5])
+        );
+        assert_eq!(
+            bytes(BossEvent {
+                id,
+                operation: BossEventOperation::Remove
+            }),
+            with(&[1])
+        );
+        assert_eq!(
+            bytes(BossEvent {
+                id,
+                operation: BossEventOperation::UpdateProgress(1.0)
+            }),
+            with(&[2, 0x3f, 0x80, 0, 0])
+        );
+        assert_eq!(
+            bytes(BossEvent {
+                id,
+                operation: BossEventOperation::UpdateTitle(Component::text("a"))
+            }),
+            with(&[3, 8, 0, 1, b'a'])
+        );
+        assert_eq!(
+            bytes(BossEvent {
+                id,
+                operation: BossEventOperation::UpdateStyle {
+                    color: BossBarColor::White,
+                    overlay: BossBarOverlay::Notched20
+                }
+            }),
+            with(&[4, 6, 4])
+        );
+        assert_eq!(
+            bytes(BossEvent {
+                id,
+                operation: BossEventOperation::UpdateFlags(flags)
+            }),
+            with(&[5, 5])
+        );
     }
 
     #[test]

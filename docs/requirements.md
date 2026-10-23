@@ -554,9 +554,9 @@ Adventure 相当の層（D19）。Component と MiniMessage は `lodeframe-text`
 
 - Player・Instance・任意のグループが共通 trait を実装する: メッセージ、Title（時間指定）、ActionBar、Sound（位置・カテゴリ・停止・自分以外へ）、BossBar の表示・更新・非表示、タブリストのヘッダー・フッター。key で登録する独自の audience と、1 回の encode で全員へ送るまとめ送り。
 - **受入条件**
-  - [ ] 同じコードで 1 人・Instance 全員・任意のグループに送れる
-  - [ ] BossBar の進捗・色・タイトル変更が表示中のクライアントに反映される
-  - [ ] 1 人を除いて送れる（D29 の (5)）
+  - [x] 同じコードで 1 人・Instance 全員・任意のグループに送れる（`PlayerId`・`Everyone`・`Group`・key で登録した audience・スライスを同じ `impl Audience` に渡す。ハーネスで確認）
+  - [x] BossBar の進捗・色・タイトル変更が表示中のクライアントに反映される（表示中の人だけに `BossEvent` が届き、隠した人・退室した人・値が同じときは届かない。パケットは 26.3 の `server.jar` を `javap` で読んだ形。実クライアントでの表示は `cargo run -p lodeframe --example audience` で利用者に確認を頼む）
+  - [x] 1 人を除いて送れる（D29 の (5)）（`Everyone.except(player)`）
 
 ### REQ-TEXT-004: 端末向けの変換とログ
 
