@@ -23,6 +23,7 @@ use tokio::sync::{
 use crate::{
     clock::Clock,
     login::Profile,
+    player::ClientSettings,
     protocol::{Identifier, Uuid},
 };
 
@@ -96,6 +97,9 @@ pub enum Message {
         /// What the client sent on plugin channels while it was joining, oldest first. The brand
         /// it reports is one.
         plugin_messages: Vec<PluginMessage>,
+        /// The options the client sent while it was joining (its language, its view distance,
+        /// ...), or `None` if it sent none.
+        client_settings: Option<ClientSettings>,
     },
     /// A packet from a player: id and payload.
     Packet {

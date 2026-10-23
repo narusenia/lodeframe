@@ -11,12 +11,13 @@ use tokio::{
 use crate::{
     instance::PluginMessage,
     net::Connection,
+    player::ClientSettings,
     protocol::{
         Decode, Error, Identifier, Packet, Result, State, VERSION_NAME,
         packets::configuration::{
-            AckFinishConfiguration, ClientboundCustomPayload, ClientboundKnownPacks,
-            FinishConfiguration, KnownPack, ServerboundCustomPayload, ServerboundKnownPacks,
-            UpdateEnabledFeatures,
+            AckFinishConfiguration, ClientInformation, ClientboundCustomPayload,
+            ClientboundKnownPacks, FinishConfiguration, KnownPack, ServerboundCustomPayload,
+            ServerboundKnownPacks, UpdateEnabledFeatures,
         },
         split_packet_id,
     },
@@ -54,6 +55,29 @@ pub async fn run_with<S: AsyncRead + AsyncWrite + Unpin>(
     brand: &str,
     known_packs_timeout: Duration,
 ) -> Result<Vec<PluginMessage>> {
+    Ok(configure(conn, registries, brand, known_packs_timeout)
+        .await?
+        .plugin_messages)
+}
+
+/// What the client sent while it was configured, to hand to the instance on the join with
+/// [`play::run_configured`](crate::play::run_configured).
+#[derive(Debug, Clone, Default)]
+pub struct Configured {
+    /// What the client sent on plugin channels, the brand it reports among them.
+    pub plugin_messages: Vec<PluginMessage>,
+    /// The options of the client (its language, its view distance, ...), the last it sent, or
+    /// `None` if it sent none.
+    pub client_settings: Option<ClientSettings>,
+}
+
+/// Like [`run_with`], keeping the client's options as well as its plugin messages.
+pub async fn configure<S: AsyncRead + AsyncWrite + Unpin>(
+    conn: &mut Connection<S>,
+    registries: &Registries,
+    brand: &str,
+    known_packs_timeout: Duration,
+) -> Result<Configured> {
     if conn.state() != State::Configuration {
         return Err(Error::InvalidValue("not in the configuration state"));
     }
@@ -73,7 +97,7 @@ pub async fn run_with<S: AsyncRead + AsyncWrite + Unpin>(
     })
     .await?;
 
-    let mut messages = Vec::new();
+    let mut messages = Configured::default();
     let packs: ServerboundKnownPacks =
         timeout(known_packs_timeout, read_until(conn, &mut messages))
             .await
@@ -98,9 +122,9 @@ pub const MAX_PLUGIN_MESSAGES: usize = 64;
 /// How many bytes of plugin messages (the data of all of them) the client may send while it joins.
 pub const MAX_PLUGIN_BYTES: usize = 64 * 1024;
 
-/// Reads until a `P` arrives. Plugin messages on the way are added to `messages`; client
-/// information is ignored.
-async fn read_until<S, P>(conn: &mut Connection<S>, messages: &mut Vec<PluginMessage>) -> Result<P>
+/// Reads until a `P` arrives. Plugin messages on the way are added to `gathered`, and the client
+/// information replaces what it had.
+async fn read_until<S, P>(conn: &mut Connection<S>, gathered: &mut Configured) -> Result<P>
 where
     S: AsyncRead + AsyncWrite + Unpin,
     P: Packet + Decode,
@@ -111,10 +135,14 @@ where
         let (packet_id, mut payload) = split_packet_id(&body)?;
         match packet_id {
             x if x == P::ID => return P::decode(&mut payload),
-            // ponytail: client settings are dropped until Play needs them
-            id::CLIENT_INFORMATION => {}
+            id::CLIENT_INFORMATION => {
+                gathered.client_settings = Some(ClientSettings::from(&ClientInformation::decode(
+                    &mut payload,
+                )?));
+            }
             id::CUSTOM_PAYLOAD => {
                 let message = ServerboundCustomPayload::decode(&mut payload)?;
+                let messages = &mut gathered.plugin_messages;
                 let bytes: usize = messages.iter().map(|m| m.data.len()).sum();
                 if messages.len() >= MAX_PLUGIN_MESSAGES
                     || bytes + message.data.len() > MAX_PLUGIN_BYTES

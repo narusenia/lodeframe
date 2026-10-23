@@ -50,6 +50,7 @@ use crate::{
     event::{Event, EventNode},
     instance::{Instance, Message, Packets, PluginMessage},
     login::Profile,
+    player::ClientSettings,
     protocol::{Decode, Encode, Packet, Result, Uuid, packet_body, split_packet_id},
 };
 
@@ -155,6 +156,22 @@ impl<I: Instance> TestEnv<I> {
         self.connect_as(profile, plugin_messages)
     }
 
+    /// Like [`connect`](Self::connect), with the options the client sent while it joined (its
+    /// language, its view distance, ...).
+    pub fn connect_with_client_settings(
+        &mut self,
+        name: &str,
+        client_settings: ClientSettings,
+    ) -> FakePlayer {
+        let profile = Profile {
+            uuid: Uuid::offline(name),
+            name: name.into(),
+            properties: Vec::new(),
+            remote_addr: None,
+        };
+        self.join(profile, Vec::new(), Some(client_settings))
+    }
+
     /// Like [`connect_with`](Self::connect_with), for a player a proxy forwarded: the profile
     /// carries the UUID, the skin and the address the way [`login::velocity`](crate::login::velocity)
     /// reads them.
@@ -163,6 +180,15 @@ impl<I: Instance> TestEnv<I> {
         profile: Profile,
         plugin_messages: Vec<PluginMessage>,
     ) -> FakePlayer {
+        self.join(profile, plugin_messages, None)
+    }
+
+    fn join(
+        &mut self,
+        profile: Profile,
+        plugin_messages: Vec<PluginMessage>,
+        client_settings: Option<ClientSettings>,
+    ) -> FakePlayer {
         let uuid = profile.uuid;
         let (outbound, inbox) = mpsc::channel(OUTBOX);
         let connection = outbound.downgrade();
@@ -170,6 +196,7 @@ impl<I: Instance> TestEnv<I> {
             profile,
             outbound,
             plugin_messages,
+            client_settings,
         });
         FakePlayer {
             uuid,

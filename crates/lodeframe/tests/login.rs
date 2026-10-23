@@ -70,7 +70,17 @@ async fn run(threshold: Option<usize>) {
     let offer: ClientboundKnownPacks = client.read_packet().await.unwrap();
     assert_eq!(offer.packs[0].version, VERSION_NAME);
     client
-        .write_frame(&[ids::configuration::serverbound::CLIENT_INFORMATION as u8, 0])
+        .write_packet(&ClientInformation {
+            language: "en_us".into(),
+            view_distance: 8,
+            chat_mode: lodeframe::protocol::VarInt(0),
+            chat_colors: true,
+            skin_parts: 0x7f,
+            main_hand: lodeframe::protocol::VarInt(1),
+            text_filtering: false,
+            allow_listing: true,
+            particles: lodeframe::protocol::VarInt(0),
+        })
         .await
         .unwrap();
     client
@@ -244,4 +254,65 @@ async fn a_client_that_sends_too_many_bytes_in_configuration_is_cut() {
     let several = (0..4).map(|_| payload("mod:big", big.clone())).collect();
 
     assert!(configure_sending(several).await.is_err());
+}
+
+/// Runs configuration against a client that sends `infos` before it answers the known packs, and
+/// returns what the server kept of them.
+async fn configure_with_options(
+    infos: Vec<ClientInformation>,
+) -> Option<lodeframe::player::ClientSettings> {
+    let (a, b) = duplex(1 << 22);
+    let mut server = Connection::new(a, T);
+    let mut client = Connection::new(b, T);
+    server.set_state(State::Configuration);
+    let task = tokio::spawn(async move {
+        configuration::configure(&mut server, &Registries::vanilla(), "x", T).await
+    });
+    let _: ClientboundCustomPayload = client.read_packet().await.unwrap();
+    let _: UpdateEnabledFeatures = client.read_packet().await.unwrap();
+    let offer: ClientboundKnownPacks = client.read_packet().await.unwrap();
+    for info in &infos {
+        client.write_packet(info).await.unwrap();
+    }
+    client
+        .write_packet(&ServerboundKnownPacks { packs: offer.packs })
+        .await
+        .unwrap();
+    loop {
+        let body = client.read_frame().await.unwrap();
+        let (id, _) = split_packet_id(&body).unwrap();
+        if id == ids::configuration::clientbound::FINISH_CONFIGURATION {
+            client.write_packet(&AckFinishConfiguration).await.unwrap();
+            break;
+        }
+    }
+    task.await.unwrap().unwrap().client_settings
+}
+
+fn information(language: &str, view_distance: i8) -> ClientInformation {
+    ClientInformation {
+        language: language.into(),
+        view_distance,
+        chat_mode: lodeframe::protocol::VarInt(0),
+        chat_colors: true,
+        skin_parts: 0x7f,
+        main_hand: lodeframe::protocol::VarInt(1),
+        text_filtering: false,
+        allow_listing: true,
+        particles: lodeframe::protocol::VarInt(0),
+    }
+}
+
+#[tokio::test]
+async fn the_options_the_client_sends_in_configuration_are_handed_on() {
+    // none sent: none to hand on
+    assert_eq!(configure_with_options(Vec::new()).await, None);
+
+    // the last one is what it has
+    let kept =
+        configure_with_options(vec![information("en_us", 8), information("ja_jp", 40)]).await;
+    let kept = kept.unwrap();
+    assert_eq!(kept.language, "ja_jp");
+    // brought into what the game takes
+    assert_eq!(kept.view_distance, 32);
 }

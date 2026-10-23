@@ -2,10 +2,12 @@
 //! A minimal lobby server built only on lodeframe's event API.
 //!
 //! A flat world where players are greeted, can build in a small area above the floor and
-//! nowhere else, and are told that commands do not exist.
+//! nowhere else, are told that commands do not exist, and are put back at the spawn when they
+//! fall off the world.
 
 use lodeframe::{
     chunk::FlatGenerator,
+    player::PlayerMoveEvent,
     registry::Registries,
     text::{Color, Component},
     world::{
@@ -19,6 +21,8 @@ pub const FLOOR: i32 = -61;
 pub const BUILD_RADIUS: i32 = 16;
 /// The highest block that can be placed.
 pub const BUILD_TOP: i32 = -50;
+/// A player who falls below this is put back at the spawn.
+pub const VOID: f64 = -70.0;
 
 /// The lobby world. Build it with [`lodeframe::server::Server::run`].
 pub fn lobby(registries: &Registries) -> World {
@@ -34,6 +38,13 @@ pub fn lobby(registries: &Registries) -> World {
     });
     events.on(|e: &mut PlayerLeaveEvent, ctx: &mut Ctx| {
         ctx.broadcast(&Component::text(format!("- {}", e.name)).color(Color::Red));
+    });
+
+    // fell off the world: sent to the spawn instead of where the client says it is
+    events.on(|e: &mut PlayerMoveEvent, ctx: &mut Ctx| {
+        if e.position.y < VOID {
+            e.position = ctx.spawn;
+        }
     });
 
     events.on(|e: &mut BlockBreakEvent, _: &mut Ctx| {
