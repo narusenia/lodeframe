@@ -4,7 +4,9 @@
 
 use super::{Ctx, Player, PlayerId};
 use crate::{
-    player::{Abilities, GameMode, GameModeChangedEvent, Relative, Teleport},
+    player::{
+        Abilities, ClientSettings, GameMode, GameModeChangedEvent, Input, Relative, Teleport,
+    },
     protocol::{
         Packet, Uuid, VarInt, Vec3, packet_body,
         packets::play::{
@@ -134,6 +136,28 @@ impl Ctx {
     /// Whether the player's client says they stand on something. `false` if they are gone.
     pub fn is_on_ground(&self, player: PlayerId) -> bool {
         self.resolve(player).is_some_and(|p| p.on_ground)
+    }
+
+    /// The keys the player holds, or `None` if they are gone.
+    pub fn input(&self, player: PlayerId) -> Option<Input> {
+        self.resolve(player).map(|p| p.input)
+    }
+
+    /// Whether the player is sprinting. `false` if they are gone.
+    pub fn is_sprinting(&self, player: PlayerId) -> bool {
+        self.resolve(player).is_some_and(|p| p.input.sprint)
+    }
+
+    /// The options of the player's client: from when they joined, and as they changed them since
+    /// (a [`ClientSettingsEvent`](crate::player::ClientSettingsEvent) says when). The game's
+    /// own if their client never said. `None` if they are gone.
+    pub fn client_settings(&self, player: PlayerId) -> Option<&ClientSettings> {
+        self.resolve(player).map(|p| &p.settings)
+    }
+
+    /// The language of the player's client, like `ja_jp`. `None` if they are gone.
+    pub fn locale(&self, player: PlayerId) -> Option<&str> {
+        self.resolve(player).map(|p| p.settings.language.as_str())
     }
 
     /// Whether the player is sneaking. `false` if they are gone.

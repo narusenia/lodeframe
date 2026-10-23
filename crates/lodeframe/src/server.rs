@@ -467,15 +467,21 @@ impl Server {
                             .await?;
                             return Ok(());
                         };
-                        let plugin_messages = configuration::run_with(
+                        let configured = configuration::configure(
                             &mut conn,
                             &registries,
                             &options.brand,
                             options.known_packs_timeout,
                         )
                         .await?;
-                        play::run_with(conn, profile, instance, options.keep_alive, plugin_messages)
-                            .await
+                        play::run_configured(
+                            conn,
+                            profile,
+                            instance,
+                            options.keep_alive,
+                            configured,
+                        )
+                        .await
                     }
                 }
             },

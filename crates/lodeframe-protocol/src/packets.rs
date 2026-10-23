@@ -44,6 +44,38 @@ macro_rules! payload_packet {
     };
 }
 
+/// Defines the client information packet: what the client's options say. It has the same
+/// fields in configuration and in play, with a different id. Used inside a module that has
+/// `Encode`, `Decode`, `Packet` and `VarInt`.
+macro_rules! client_information_packet {
+    ($(#[$meta:meta])* $name:ident) => {
+        #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Packet)]
+        #[lodeframe(crate = crate)]
+        $(#[$meta])*
+        pub struct $name {
+            /// The language, like `en_us`; the game allows 16 characters.
+            pub language: String,
+            /// The view distance in chunks the client wants.
+            pub view_distance: i8,
+            /// Which chat it shows: 0 all, 1 commands only, 2 hidden.
+            pub chat_mode: VarInt,
+            /// Whether it shows colours in the chat.
+            pub chat_colors: bool,
+            /// A bit set of the parts of the skin it shows: cape 1, jacket 2, left sleeve 4, right
+            /// sleeve 8, left pants 16, right pants 32, hat 64.
+            pub skin_parts: u8,
+            /// 0 left, 1 right.
+            pub main_hand: VarInt,
+            /// Whether the client filters text.
+            pub text_filtering: bool,
+            /// Whether the player may show in server lists.
+            pub allow_listing: bool,
+            /// How many particles it shows: 0 all, 1 fewer, 2 the least.
+            pub particles: VarInt,
+        }
+    };
+}
+
 /// Handshake state.
 pub mod handshake {
     use crate::{Decode, Encode, Packet, VarInt};
@@ -424,6 +456,12 @@ pub mod configuration {
     #[lodeframe(crate = crate)]
     #[packet(id = crate::ids::configuration::serverbound::FINISH_CONFIGURATION, state = Configuration, side = Serverbound)]
     pub struct AckFinishConfiguration;
+
+    client_information_packet! {
+        /// The options of the client, sent when it joins.
+        #[packet(id = crate::ids::configuration::serverbound::CLIENT_INFORMATION, state = Configuration, side = Serverbound)]
+        ClientInformation
+    }
 }
 
 /// Play state. Only what the connection layer itself needs; the game packets come with the
@@ -1036,6 +1074,18 @@ pub mod play {
         /// The key bits.
         pub flags: u8,
     }
+
+    client_information_packet! {
+        /// The options of the client, sent again when the player changes them.
+        #[packet(id = crate::ids::play::serverbound::CLIENT_INFORMATION, state = Play, side = Serverbound)]
+        ClientInformation
+    }
+
+    /// The client swung its arm: it clicked at nothing or at a block.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode, Packet)]
+    #[lodeframe(crate = crate)]
+    #[packet(id = crate::ids::play::serverbound::PUNCH, state = Play, side = Serverbound)]
+    pub struct Punch;
 
     /// A line the player typed into the chat box.
     ///
@@ -2141,6 +2191,48 @@ mod tests {
             }),
             [11, 0x3f, 0x80, 0, 0]
         );
+    }
+
+    #[test]
+    fn client_information_is_the_same_in_configuration_and_play() {
+        use super::configuration::ClientInformation as Configured;
+        use super::play::ClientInformation as Playing;
+        fn bytes<T: Encode>(v: T) -> Vec<u8> {
+            let mut b = Vec::new();
+            v.encode(&mut b).unwrap();
+            b
+        }
+        let play = Playing {
+            language: "ja_jp".into(),
+            view_distance: 12,
+            chat_mode: VarInt(1),
+            chat_colors: true,
+            skin_parts: 0x7f,
+            main_hand: VarInt(0),
+            text_filtering: false,
+            allow_listing: true,
+            particles: VarInt(2),
+        };
+        assert_eq!(
+            bytes(play.clone()),
+            [5, b'j', b'a', b'_', b'j', b'p', 12, 1, 1, 0x7f, 0, 0, 1, 2]
+        );
+        let config = Configured {
+            language: play.language.clone(),
+            view_distance: play.view_distance,
+            chat_mode: play.chat_mode,
+            chat_colors: play.chat_colors,
+            skin_parts: play.skin_parts,
+            main_hand: play.main_hand,
+            text_filtering: play.text_filtering,
+            allow_listing: play.allow_listing,
+            particles: play.particles,
+        };
+        assert_eq!(bytes(config.clone()), bytes(play.clone()));
+        roundtrip(play);
+        roundtrip(config);
+        assert_eq!(bytes(Punch), Vec::<u8>::new());
+        roundtrip(Punch);
     }
 
     #[test]

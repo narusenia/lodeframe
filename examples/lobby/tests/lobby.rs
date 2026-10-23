@@ -148,3 +148,42 @@ async fn a_command_is_refused_and_the_next_line_goes_through() {
 
     server.stop();
 }
+
+#[test]
+fn a_player_who_falls_off_the_world_is_put_back_at_the_spawn() {
+    use lodeframe::{
+        protocol::{
+            Vec3,
+            packets::play::{MovePlayerPos, PlayerPosition},
+        },
+        test_util::TestEnv,
+    };
+    let mut env = TestEnv::new(lobby(&Registries::vanilla()));
+    let mut steve = env.connect("Steve");
+    steve.drain();
+    let spawn = env.instance().spawn;
+
+    // walking is left alone
+    env.send(
+        &steve,
+        &MovePlayerPos {
+            position: Vec3::new(2.5, -60.0, 0.5),
+            flags: 1,
+        },
+    );
+    assert!(steve.drain_as::<PlayerPosition>().is_empty());
+
+    // falling is not: the client is told to go to the spawn
+    env.send(
+        &steve,
+        &MovePlayerPos {
+            position: Vec3::new(2.5, -90.0, 0.5),
+            flags: 0,
+        },
+    );
+    let told = steve.drain_as::<PlayerPosition>();
+    assert_eq!(told.len(), 1);
+    assert_eq!(told[0].position, spawn);
+    let id = env.instance().player_id(steve.uuid()).unwrap();
+    assert_eq!(env.instance().position(id), Some(spawn));
+}

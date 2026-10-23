@@ -12,6 +12,7 @@ use tokio::{
 };
 
 use crate::{
+    configuration::Configured,
     instance::{InstanceHandle, Message, OUTBOX, Packets, PluginMessage},
     login::Profile,
     net::{Connection, is_disconnect},
@@ -121,11 +122,27 @@ pub async fn run<S: AsyncRead + AsyncWrite + Unpin>(
 /// unanswered for [`KeepAliveConfig::timeout`] is told why and disconnected. Each answer sends
 /// the instance a [`Message::Latency`].
 pub async fn run_with<S: AsyncRead + AsyncWrite + Unpin>(
-    mut conn: Connection<S>,
+    conn: Connection<S>,
     profile: Profile,
     instance: InstanceHandle,
     keep_alive: KeepAliveConfig,
     plugin_messages: Vec<PluginMessage>,
+) -> Result<()> {
+    let configured = Configured {
+        plugin_messages,
+        client_settings: None,
+    };
+    run_configured(conn, profile, instance, keep_alive, configured).await
+}
+
+/// Like [`run_with`], handing the instance the client's options as well as its plugin messages:
+/// what [`configuration::configure`](crate::configuration::configure) returned.
+pub async fn run_configured<S: AsyncRead + AsyncWrite + Unpin>(
+    mut conn: Connection<S>,
+    profile: Profile,
+    instance: InstanceHandle,
+    keep_alive: KeepAliveConfig,
+    configured: Configured,
 ) -> Result<()> {
     if conn.state() != State::Play {
         return Err(Error::InvalidValue("not in the play state"));
@@ -139,7 +156,8 @@ pub async fn run_with<S: AsyncRead + AsyncWrite + Unpin>(
         .send(Message::Join {
             profile,
             outbound,
-            plugin_messages,
+            plugin_messages: configured.plugin_messages,
+            client_settings: configured.client_settings,
         })
         .await
         .map_err(|_| Error::InvalidValue("instance has stopped"))?;

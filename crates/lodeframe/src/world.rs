@@ -16,8 +16,10 @@ use crate::{
     instance::{Instance, Message, Packets, Sessions},
     login::Profile,
     player::{
-        Abilities, Experience, FlyingToggleEvent, GameMode, GameModeRequestEvent, MAX_FOOD,
-        MAX_HEALTH, PlayerRespawnEvent, RESPAWN_SATURATION, RespawnPoint,
+        Abilities, ArmSwingEvent, ClientSettings, ClientSettingsEvent, Experience,
+        FlyingToggleEvent, GameMode, GameModeRequestEvent, Input, MAX_FOOD, MAX_HEALTH,
+        PlayerInputEvent, PlayerLoadedEvent, PlayerMoveEvent, PlayerRespawnEvent, PlayerSneakEvent,
+        PlayerSprintEvent, PlayerTickEvent, RESPAWN_SATURATION, RespawnPoint, Teleport,
     },
     protocol::{
         BlockPos, BlockState, Decode, Direction, Identifier, Packet, Result, Uuid, VarInt, Vec3,
@@ -31,10 +33,10 @@ use crate::{
             play::{
                 ABILITY_FLYING, ACTION_START_DESTROY_BLOCK, AcceptTeleportation, AddEntity,
                 BlockChangedAck, BlockUpdate, CLIENT_COMMAND_PERFORM_RESPAWN, ChangeGameMode, Chat,
-                ChunkBatchFinished, ChunkBatchStart, ClientCommand, ClientboundCustomPayload,
-                Disconnect, DisguisedChat, ENTITY_EVENT_PERMISSION_LEVEL, EntityEvent,
-                EntityPositionSync, FLAG_SNEAKING, ForgetLevelChunk, GAME_EVENT_IMMEDIATE_RESPAWN,
-                GameEvent, GlobalPos, INPUT_SNEAK, LEVEL_CHUNKS_LOAD_START, Login,
+                ChunkBatchFinished, ChunkBatchStart, ClientCommand, ClientInformation,
+                ClientboundCustomPayload, Disconnect, DisguisedChat, ENTITY_EVENT_PERMISSION_LEVEL,
+                EntityEvent, EntityPositionSync, FLAG_SNEAKING, ForgetLevelChunk,
+                GAME_EVENT_IMMEDIATE_RESPAWN, GameEvent, GlobalPos, LEVEL_CHUNKS_LOAD_START, Login,
                 MOVE_UNITS_PER_BLOCK, MoveEntityPos, MoveEntityPosRot, MoveEntityRot,
                 MovePlayerPos, MovePlayerPosRot, MovePlayerRot, MovePlayerStatusOnly, ON_GROUND,
                 POSE_CROUCHING, PlayerAction, PlayerInfo, PlayerInfoAdd, PlayerInfoRemove,
@@ -377,6 +379,10 @@ struct Player {
     // where they come back, or the spawn of the world
     respawn_point: Option<RespawnPoint>,
     last_death: Option<Vec3>,
+    // the keys they hold
+    input: Input,
+    // the options of their client
+    settings: ClientSettings,
 }
 
 impl Player {
@@ -805,6 +811,7 @@ impl Ctx {
         profile: Profile,
         outbound: tokio::sync::mpsc::Sender<Packets>,
         plugin_messages: &[PluginMessage],
+        client_settings: Option<&ClientSettings>,
     ) -> Option<PlayerJoinEvent> {
         let id = profile.uuid;
         if self.players.contains_key(&id) {
@@ -855,6 +862,8 @@ impl Ctx {
             dead: false,
             respawn_point: None,
             last_death: None,
+            input: Input::default(),
+            settings: client_settings.cloned().unwrap_or_default(),
         };
         if self.send_join(id, &player, entity_id).is_err() {
             self.sessions.leave(id);
@@ -1060,52 +1069,33 @@ impl Ctx {
         }
     }
 
-    /// Handles a packet that raises no event: movement and sneaking.
+    /// Handles a packet that raises no event.
     fn on_packet(&mut self, id: Uuid, packet_id: i32, mut payload: &[u8]) -> Result<()> {
-        // what the packet says about where the player is and which way they face
-        let (position, rotation, flags) = match packet_id {
-            ids::play::serverbound::MOVE_PLAYER_POS => {
-                let p = MovePlayerPos::decode(&mut payload)?;
-                (Some(p.position), None, p.flags)
+        if packet_id == ids::play::serverbound::ACCEPT_TELEPORTATION {
+            let teleport = AcceptTeleportation::decode(&mut payload)?.teleport_id.0;
+            // only the last teleport counts; an older or unknown id changes nothing
+            if let Some(player) = self.players.get_mut(&id)
+                && player.awaiting_teleport == Some(teleport)
+            {
+                player.awaiting_teleport = None;
             }
-            ids::play::serverbound::MOVE_PLAYER_POS_ROT => {
-                let p = MovePlayerPosRot::decode(&mut payload)?;
-                (Some(p.position), Some((p.yaw, p.pitch)), p.flags)
-            }
-            ids::play::serverbound::MOVE_PLAYER_ROT => {
-                let p = MovePlayerRot::decode(&mut payload)?;
-                (None, Some((p.yaw, p.pitch)), p.flags)
-            }
-            ids::play::serverbound::MOVE_PLAYER_STATUS_ONLY => (
-                None,
-                None,
-                MovePlayerStatusOnly::decode(&mut payload)?.flags,
-            ),
-            ids::play::serverbound::PLAYER_INPUT => {
-                let sneaking = PlayerInput::decode(&mut payload)?.flags & INPUT_SNEAK != 0;
-                return self.set_sneaking(id, sneaking);
-            }
-            ids::play::serverbound::ACCEPT_TELEPORTATION => {
-                let teleport = AcceptTeleportation::decode(&mut payload)?.teleport_id.0;
-                // only the last teleport counts; an older or unknown id changes nothing
-                if let Some(player) = self.players.get_mut(&id)
-                    && player.awaiting_teleport == Some(teleport)
-                {
-                    player.awaiting_teleport = None;
-                }
-                return Ok(());
-            }
-            // commands and batch answers, ...: nothing to do yet
-            _ => return Ok(()),
-        };
+        }
+        // commands and batch answers, ...: nothing to do yet
+        Ok(())
+    }
+
+    /// Takes what a movement packet says as true: where the player is, which way they face, and
+    /// whether they stand on something.
+    fn apply_move(
+        &mut self,
+        id: Uuid,
+        position: Option<Vec3>,
+        rotation: Option<(f32, f32)>,
+        flags: u8,
+    ) -> Result<()> {
         let Some(player) = self.players.get_mut(&id) else {
             return Ok(());
         };
-        // what the client sends before it has confirmed a teleport is where it was, and a dead
-        // player is not going anywhere
-        if player.awaiting_teleport.is_some() || player.dead {
-            return Ok(());
-        }
         player.on_ground = flags & ON_GROUND != 0;
         let moved = position.is_some_and(|p| p != player.pos)
             || rotation.is_some_and(|r| r != (player.yaw, player.pitch));
@@ -1563,8 +1553,14 @@ impl World {
         profile: Profile,
         outbound: tokio::sync::mpsc::Sender<Packets>,
         plugin_messages: Vec<PluginMessage>,
+        client_settings: Option<ClientSettings>,
     ) {
-        let joined = self.ctx.join(profile, outbound, &plugin_messages);
+        let joined = self.ctx.join(
+            profile,
+            outbound,
+            &plugin_messages,
+            client_settings.as_ref(),
+        );
         // a player who was replaced by this one has left before this one is here
         self.flush_departures();
         if let Some(mut event) = joined {
@@ -1604,6 +1600,46 @@ impl World {
                 self.player_action(id, PlayerAction::decode(&mut payload)?)
             }
             ids::play::serverbound::USE_ITEM_ON => self.place(id, UseItemOn::decode(&mut payload)?),
+            ids::play::serverbound::MOVE_PLAYER_POS => {
+                let p = MovePlayerPos::decode(&mut payload)?;
+                self.player_move(id, Some(p.position), None, p.flags)
+            }
+            ids::play::serverbound::MOVE_PLAYER_POS_ROT => {
+                let p = MovePlayerPosRot::decode(&mut payload)?;
+                self.player_move(id, Some(p.position), Some((p.yaw, p.pitch)), p.flags)
+            }
+            ids::play::serverbound::MOVE_PLAYER_ROT => {
+                let p = MovePlayerRot::decode(&mut payload)?;
+                self.player_move(id, None, Some((p.yaw, p.pitch)), p.flags)
+            }
+            ids::play::serverbound::MOVE_PLAYER_STATUS_ONLY => {
+                let flags = MovePlayerStatusOnly::decode(&mut payload)?.flags;
+                self.player_move(id, None, None, flags)
+            }
+            ids::play::serverbound::PLAYER_INPUT => {
+                let flags = PlayerInput::decode(&mut payload)?.flags;
+                self.player_input(id, Input::from_bits(flags))
+            }
+            ids::play::serverbound::PLAYER_LOADED => {
+                if let Some(player) = self.ctx.player_id(id) {
+                    self.emit(&mut PlayerLoadedEvent { player });
+                }
+                Ok(())
+            }
+            ids::play::serverbound::PUNCH => {
+                if let Some(player) = self.ctx.player_id(id) {
+                    self.emit(&mut ArmSwingEvent {
+                        player,
+                        cancelled: false,
+                    });
+                }
+                Ok(())
+            }
+            ids::play::serverbound::CLIENT_INFORMATION => {
+                let info = ClientInformation::decode(&mut payload)?;
+                self.client_settings_changed(id, ClientSettings::from(&info));
+                Ok(())
+            }
             ids::play::serverbound::CHANGE_GAME_MODE => {
                 let request = ChangeGameMode::decode(&mut payload)?;
                 self.game_mode_request(id, request.mode.0);
@@ -1681,6 +1717,118 @@ impl World {
             return;
         };
         self.emit(&mut GameModeRequestEvent { player, mode });
+    }
+
+    /// A client says where its player is. If they moved or turned, the handlers may stop it or
+    /// send the player somewhere else.
+    fn player_move(
+        &mut self,
+        id: Uuid,
+        position: Option<Vec3>,
+        rotation: Option<(f32, f32)>,
+        flags: u8,
+    ) -> Result<()> {
+        let Some(p) = self.ctx.players.get(&id) else {
+            return Ok(());
+        };
+        // before the client has confirmed a teleport what it sends is where it was, and a dead
+        // player is not going anywhere
+        if p.awaiting_teleport.is_some() || p.dead {
+            return Ok(());
+        }
+        let finite = |v: Vec3| [v.x, v.y, v.z].iter().all(|c| c.is_finite());
+        if position.is_some_and(|v| !finite(v))
+            || rotation.is_some_and(|(yaw, pitch)| !(yaw.is_finite() && pitch.is_finite()))
+        {
+            return Ok(());
+        }
+        let (from, from_rotation) = (p.pos, (p.yaw, p.pitch));
+        let moved =
+            position.is_some_and(|v| v != from) || rotation.is_some_and(|r| r != from_rotation);
+        let Some(player) = self.ctx.player_id(id).filter(|_| moved) else {
+            return self.ctx.apply_move(id, position, rotation, flags);
+        };
+        let (new_position, (yaw, pitch)) =
+            (position.unwrap_or(from), rotation.unwrap_or(from_rotation));
+        let mut event = PlayerMoveEvent {
+            player,
+            from,
+            position: new_position,
+            yaw,
+            pitch,
+            on_ground: flags & ON_GROUND != 0,
+            cancelled: false,
+        };
+        let cancelled = self.emit(&mut event);
+        let sent = (event.position, event.yaw, event.pitch) == (new_position, yaw, pitch);
+        if !cancelled && sent {
+            return self.ctx.apply_move(id, position, rotation, flags);
+        }
+        // put back, or sent where a handler said; a place that is not a number goes back too
+        let wanted = if cancelled
+            || !finite(event.position)
+            || !(event.yaw.is_finite() && event.pitch.is_finite())
+        {
+            Teleport::new(from).yaw_pitch(from_rotation.0, from_rotation.1)
+        } else {
+            self.ctx.apply_move(id, None, None, flags)?;
+            Teleport::new(event.position).yaw_pitch(event.yaw, event.pitch)
+        };
+        self.ctx.teleport(player, wanted);
+        Ok(())
+    }
+
+    /// A client says which keys its player holds.
+    fn player_input(&mut self, id: Uuid, input: Input) -> Result<()> {
+        let Some(player) = self.ctx.player_id(id) else {
+            return Ok(());
+        };
+        let Some(p) = self.ctx.players.get_mut(&id) else {
+            return Ok(());
+        };
+        let previous = std::mem::replace(&mut p.input, input);
+        if previous == input {
+            return Ok(());
+        }
+        // the players who see this one are shown them sneak
+        self.ctx.set_sneaking(id, input.sneak)?;
+        self.emit(&mut PlayerInputEvent {
+            player,
+            input,
+            previous,
+        });
+        if input.sneak != previous.sneak {
+            self.emit(&mut PlayerSneakEvent {
+                player,
+                sneaking: input.sneak,
+            });
+        }
+        if input.sprint != previous.sprint {
+            self.emit(&mut PlayerSprintEvent {
+                player,
+                sprinting: input.sprint,
+            });
+        }
+        Ok(())
+    }
+
+    /// A client says its options are these now.
+    fn client_settings_changed(&mut self, id: Uuid, settings: ClientSettings) {
+        let Some(player) = self.ctx.player_id(id) else {
+            return;
+        };
+        let Some(p) = self.ctx.players.get_mut(&id) else {
+            return;
+        };
+        if p.settings == settings {
+            return;
+        }
+        let previous = std::mem::replace(&mut p.settings, settings.clone());
+        self.emit(&mut ClientSettingsEvent {
+            player,
+            settings,
+            previous,
+        });
     }
 
     /// A dead player pressed respawn: they come back with what the handlers leave in the event,
@@ -1787,7 +1935,8 @@ impl Instance for World {
                 profile,
                 outbound,
                 plugin_messages,
-            } => self.join(profile, outbound, plugin_messages),
+                client_settings,
+            } => self.join(profile, outbound, plugin_messages, client_settings),
             Message::Packet { player, body } => self.packet(player, &body),
             Message::Latency { player, rtt } => {
                 if let Some(p) = self.ctx.players.get_mut(&player) {
@@ -1824,6 +1973,14 @@ impl Instance for World {
         self.ctx.run_tasks(Phase::Start);
         self.ctx.tick();
         self.ctx.run_tasks(Phase::End);
+        // in a fixed order, so that a run of the same game is the same
+        let mut players: Vec<PlayerId> = self.ctx.players().collect();
+        players.sort_by_key(|p| (p.uuid(), p.serial));
+        for player in players {
+            if self.ctx.is_online(player) {
+                self.emit(&mut PlayerTickEvent { player });
+            }
+        }
         self.settle();
     }
 }

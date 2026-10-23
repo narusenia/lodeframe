@@ -8,7 +8,7 @@ use crate::{
         Vec3,
         packets::play::{
             ABILITY_ALLOW_FLYING, ABILITY_FLYING, ABILITY_INSTANT_BREAK, ABILITY_INVULNERABLE,
-            PlayerAbilities,
+            ClientInformation, PlayerAbilities,
         },
     },
     text::Component,
@@ -368,6 +368,279 @@ impl PlayerRespawnEvent {
     }
 }
 
+/// Which keys a player holds: what their client says with every change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Input {
+    /// Forward (W).
+    pub forward: bool,
+    /// Backward (S).
+    pub backward: bool,
+    /// Left (A).
+    pub left: bool,
+    /// Right (D).
+    pub right: bool,
+    /// Jump.
+    pub jump: bool,
+    /// Sneak.
+    pub sneak: bool,
+    /// Sprint.
+    pub sprint: bool,
+}
+
+impl Input {
+    /// The keys of the bits of the packet: forward 1, backward 2, left 4, right 8, jump 0x10,
+    /// sneak 0x20, sprint 0x40.
+    pub fn from_bits(bits: u8) -> Self {
+        let held = |bit: u8| bits & bit != 0;
+        Self {
+            forward: held(0x01),
+            backward: held(0x02),
+            left: held(0x04),
+            right: held(0x08),
+            jump: held(0x10),
+            sneak: held(0x20),
+            sprint: held(0x40),
+        }
+    }
+}
+
+/// Which chat a client shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChatMode {
+    /// All of it.
+    #[default]
+    Full,
+    /// Only what comes of commands.
+    CommandsOnly,
+    /// None.
+    Hidden,
+}
+
+/// The parts of the skin a client shows, as the bits it sends: cape 1, jacket 2, left sleeve 4,
+/// right sleeve 8, left pants 16, right pants 32, hat 64.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkinParts(pub u8);
+
+impl SkinParts {
+    /// Every part.
+    pub const ALL: Self = Self(0x7f);
+    /// The cape.
+    pub const CAPE: u8 = 0x01;
+    /// The jacket.
+    pub const JACKET: u8 = 0x02;
+    /// The hat.
+    pub const HAT: u8 = 0x40;
+
+    /// Whether every bit of `part` is shown.
+    pub fn shows(self, part: u8) -> bool {
+        self.0 & part == part
+    }
+}
+
+/// Which hand a player uses most.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MainHand {
+    /// The left.
+    Left,
+    /// The right.
+    #[default]
+    Right,
+}
+
+/// How many particles a client shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ParticleStatus {
+    /// All of them.
+    #[default]
+    All,
+    /// Fewer.
+    Decreased,
+    /// The least.
+    Minimal,
+}
+
+/// The options of a player's client: what their language is, how far they want to see, and so
+/// on. See [`Ctx::client_settings`](crate::world::Ctx::client_settings).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientSettings {
+    /// The language, like `ja_jp`; at most 16 characters.
+    pub language: String,
+    /// The view distance in chunks the client asks for, 2 to 32.
+    pub view_distance: u8,
+    /// Which chat it shows.
+    pub chat_mode: ChatMode,
+    /// Whether it shows colours in the chat.
+    pub chat_colors: bool,
+    /// The parts of the skin it shows.
+    pub skin_parts: SkinParts,
+    /// The main hand.
+    pub main_hand: MainHand,
+    /// Whether the client filters text.
+    pub text_filtering: bool,
+    /// Whether the player may show in server lists.
+    pub allow_listing: bool,
+    /// How many particles it shows.
+    pub particles: ParticleStatus,
+}
+
+impl Default for ClientSettings {
+    /// What the game has before the player changes anything.
+    fn default() -> Self {
+        Self {
+            language: "en_us".into(),
+            view_distance: 2,
+            chat_mode: ChatMode::default(),
+            chat_colors: true,
+            skin_parts: SkinParts::ALL,
+            main_hand: MainHand::default(),
+            text_filtering: false,
+            allow_listing: true,
+            particles: ParticleStatus::default(),
+        }
+    }
+}
+
+/// What a client said, brought into what the game takes: a language of 16 characters at most, a
+/// view distance of 2 to 32, and the options that name a choice it does not know are the default.
+/// The packets of configuration and of play say it the same way.
+macro_rules! settings_from_packet {
+    ($($packet:ty),*) => {$(
+        impl From<&$packet> for ClientSettings {
+            fn from(info: &$packet) -> Self {
+                Self {
+                    language: info.language.chars().take(16).collect(),
+                    view_distance: info.view_distance.clamp(2, 32) as u8,
+                    chat_mode: match info.chat_mode.0 {
+                        1 => ChatMode::CommandsOnly,
+                        2 => ChatMode::Hidden,
+                        _ => ChatMode::Full,
+                    },
+                    chat_colors: info.chat_colors,
+                    skin_parts: SkinParts(info.skin_parts & 0x7f),
+                    main_hand: if info.main_hand.0 == 0 {
+                        MainHand::Left
+                    } else {
+                        MainHand::Right
+                    },
+                    text_filtering: info.text_filtering,
+                    allow_listing: info.allow_listing,
+                    particles: match info.particles.0 {
+                        1 => ParticleStatus::Decreased,
+                        2 => ParticleStatus::Minimal,
+                        _ => ParticleStatus::All,
+                    },
+                }
+            }
+        }
+    )*};
+}
+settings_from_packet!(
+    ClientInformation,
+    crate::protocol::packets::configuration::ClientInformation
+);
+
+/// A player moves or turns. If it is not cancelled they do, as their client says; the fields
+/// may be changed, and then they are put where the fields say instead. Cancelled, they are put
+/// back where they were. Either way the client is teleported, and what it sent in the meantime
+/// is dropped until it confirms (see [`Ctx::teleport`](crate::world::Ctx::teleport)).
+///
+/// It is not sent for a client that says it stands where it stood, or for one that has not
+/// confirmed a teleport, or for a dead one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerMoveEvent {
+    /// Who moves.
+    pub player: PlayerId,
+    /// Where they are now.
+    pub from: Vec3,
+    /// Where they say they are.
+    pub position: Vec3,
+    /// Degrees around the y axis, as they say.
+    pub yaw: f32,
+    /// Degrees up and down, as they say.
+    pub pitch: f32,
+    /// Whether they say they stand on something.
+    pub on_ground: bool,
+    pub(crate) cancelled: bool,
+}
+
+impl PlayerMoveEvent {
+    /// Puts the player back where they were.
+    pub fn cancel(&mut self) {
+        self.cancelled = true;
+    }
+}
+
+/// A player pressed or released a key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerInputEvent {
+    /// Whose keys.
+    pub player: PlayerId,
+    /// The keys they hold now.
+    pub input: Input,
+    /// The keys they held.
+    pub previous: Input,
+}
+
+/// A player started or stopped sneaking. Their pose has changed for the players who see them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerSneakEvent {
+    /// Who.
+    pub player: PlayerId,
+    /// Whether they sneak now.
+    pub sneaking: bool,
+}
+
+/// A player started or stopped sprinting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerSprintEvent {
+    /// Who.
+    pub player: PlayerId,
+    /// Whether they sprint now.
+    pub sprinting: bool,
+}
+
+/// Once for each player in every tick of the world, at the end of it. A dead player gets it too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerTickEvent {
+    /// Who.
+    pub player: PlayerId,
+}
+
+/// A player changed the options of their client while they were playing. What they had when
+/// they joined is not an event: it is in [`Ctx::client_settings`](crate::world::Ctx::client_settings).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientSettingsEvent {
+    /// Whose options.
+    pub player: PlayerId,
+    /// What they are now.
+    pub settings: ClientSettings,
+    /// What they were.
+    pub previous: ClientSettings,
+}
+
+/// A player's client finished loading the world, after they joined or respawned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerLoadedEvent {
+    /// Who.
+    pub player: PlayerId,
+}
+
+/// A player's client swung its arm: they clicked at nothing, or at a block. The other players
+/// are not shown it, so cancelling stops nothing yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArmSwingEvent {
+    /// Who.
+    pub player: PlayerId,
+    pub(crate) cancelled: bool,
+}
+
+impl ArmSwingEvent {
+    /// Marks the swing as cancelled, for the handlers that run after.
+    pub fn cancel(&mut self) {
+        self.cancelled = true;
+    }
+}
+
 macro_rules! player_event {
     ($($event:ty),*) => {$(
         impl PlayerEvent for $event {
@@ -382,7 +655,15 @@ player_event!(
     GameModeChangedEvent,
     FlyingToggleEvent,
     PlayerDeathEvent,
-    PlayerRespawnEvent
+    PlayerRespawnEvent,
+    PlayerMoveEvent,
+    PlayerInputEvent,
+    PlayerSneakEvent,
+    PlayerSprintEvent,
+    PlayerTickEvent,
+    ClientSettingsEvent,
+    PlayerLoadedEvent,
+    ArmSwingEvent
 );
 
 impl Event for GameModeRequestEvent {
@@ -414,6 +695,44 @@ impl Event for PlayerDeathEvent {
 }
 
 impl Event for PlayerRespawnEvent {
+    fn is_cancelled(&self) -> bool {
+        self.cancelled
+    }
+
+    fn parents<C: 'static>(&mut self, parents: &mut Parents<'_, C>) {
+        parents.visit::<dyn PlayerEvent>(self);
+    }
+}
+
+macro_rules! plain_event {
+    ($($event:ty),*) => {$(
+        impl Event for $event {
+            fn parents<C: 'static>(&mut self, parents: &mut Parents<'_, C>) {
+                parents.visit::<dyn PlayerEvent>(self);
+            }
+        }
+    )*};
+}
+plain_event!(
+    PlayerInputEvent,
+    PlayerSneakEvent,
+    PlayerSprintEvent,
+    PlayerTickEvent,
+    ClientSettingsEvent,
+    PlayerLoadedEvent
+);
+
+impl Event for PlayerMoveEvent {
+    fn is_cancelled(&self) -> bool {
+        self.cancelled
+    }
+
+    fn parents<C: 'static>(&mut self, parents: &mut Parents<'_, C>) {
+        parents.visit::<dyn PlayerEvent>(self);
+    }
+}
+
+impl Event for ArmSwingEvent {
     fn is_cancelled(&self) -> bool {
         self.cancelled
     }

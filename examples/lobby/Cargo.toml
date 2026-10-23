@@ -16,4 +16,5 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+lodeframe = { path = "../../crates/lodeframe", features = ["test-util"] }
 lodeframe-bot.workspace = true

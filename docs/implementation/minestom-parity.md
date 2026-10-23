@@ -166,17 +166,17 @@
 | # | Minestom の機能 | lodeframe | 受け皿 |
 |---|---|---|---|
 | 5.1 | 独自の Player と UUID の差し替え | ✅ 利用者データは `ctx.player_data(id)`（D35）。ログイン前の UUID・名前・スキンの差し替えは `Server::on_login`（D42） | クラスの継承は不要（Rust では持たせるデータで足りる） |
-| 5.2 | 接続の流れのイベント（pre-login・configuration・spawn・loaded・disconnect） | 🔶 join / leave のみ | pre-login は REQ-API-003（v0.2）、configuration は REQ-NET-010（v0.3）、loaded は REQ-API-005（v0.2） |
+| 5.2 | 接続の流れのイベント（pre-login・configuration・spawn・loaded・disconnect） | 🔶 join / leave・`PlayerLoadedEvent` | pre-login は REQ-API-003（v0.2）、configuration は REQ-NET-010（v0.3） |
 | 5.3 | ゲームモードと変更イベント（F3+F4 を含む） | ✅ `set_game_mode`・`GameModeChangedEvent`・F3+F4 の `GameModeRequestEvent`（既定は何もしない）・`default_game_mode`（D47） | — |
 | 5.4 | 能力（飛行・速度・視野・即時破壊・無敵）と飛行のイベント | ✅ `Abilities`・`set_abilities`・`FlyingToggleEvent` | — |
 | 5.5 | 権限レベル（op 0〜4） | ✅ 持ってクライアントに伝える | コマンドの可視性は REQ-API-004（M2-23） |
 | 5.6 | 体力・空腹・経験値 | ✅ 設定と丸め（最大体力は 20 固定。属性は REQ-ENT 側）。自動の回復・飢えは持たない（D48） | 実クライアントでの表示は利用者に確認を頼む |
 | 5.7 | リスポーン（地点・画面・死亡地点・イベント） | ✅ `PlayerDeathEvent`・`PlayerRespawnEvent`・`kill`・`respawn`・`set_respawn_point`・`last_death`・`show_death_screen` | 死亡アニメーションは REQ-ENT 側 |
 | 5.8 | テレポート（相対指定・確認 ID の管理） | ✅ `teleport`（相対・向きの保持・確認までの申告を捨てる）。位置の申告は信じる | 入室時の確認待ちと再送は持たない |
-| 5.9 | 移動・入力・ダッシュ・tick のイベント | ⬜ | REQ-API-005（v0.2） |
+| 5.9 | 移動・入力・ダッシュ・tick のイベント | ✅ `PlayerMoveEvent`（キャンセル・行き先の書き換え）・`PlayerInputEvent`・`PlayerSneakEvent`・`PlayerSprintEvent`・`PlayerTickEvent`（D49） | — |
 | 5.10 | 観戦・カメラ | ⬜ | REQ-UI-007（v0.7） |
 | 5.11 | プレイヤーごとの view distance（実行中の変更） | 🔶 World 全体の固定値 | REQ-WORLD-006（v0.3） |
-| 5.12 | クライアント設定・言語のイベント | ⬜ 捨てている | REQ-API-005（v0.2） |
+| 5.12 | クライアント設定・言語のイベント | ✅ `ClientSettings`（入室時から）・`ClientSettingsEvent`・`locale` | — |
 | 5.13 | チャットイベントの書式変更・チャット表示設定の尊重 | 🔶 本文の差し替えのみ | REQ-API-005（v0.2、D29 の (4)） |
 | 5.14 | chat type と disguised chat | 🔶 disguised chat のみ | REQ-API-005（v0.2、D29 の (4)） |
 | 5.15 | クリックのコールバック（回数・期限つき） | ⬜ | REQ-UI-008（v0.7） |
